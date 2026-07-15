@@ -1,0 +1,20 @@
+{
+  "year": 2026,
+  "month": 7,
+  "department": "さいたま本部",
+  "employee_name": "藤野 恒児",
+  "commuter_pass": "東武東上線 ふじみ野駅 ～ 東武東上線 池袋駅",
+  "submission_date": "2026-08-03",
+  "lines": [
+    {
+      "id": "expense-001",
+      "travel_date": "2026-07-15",
+      "destination": "浦和高校",
+      "paid_section": "池袋→浦和",
+      "amount": 406,
+      "reason": "学校訪問",
+      "review_state": "確認済み",
+      "start_time": "10:00:00"
+    }
+  ]
+}

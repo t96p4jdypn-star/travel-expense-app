@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "travel-expense-app"
+version = "0.1.0"
+description = "出張旅費代精算書のExcel出力エンジン"
+requires-python = ">=3.11"
+dependencies = ["openpyxl>=3.1,<4"]
+
+[project.scripts]
+travel-expense-export = "travel_expense.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
