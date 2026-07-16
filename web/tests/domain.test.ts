@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildDayRoute, copyPages, isPassCovered, outputLines, parseIcsSchedules, tabSeparated } from "../app/lib/domain";
+import { buildDayRoute, copyPages, isPassCovered, outputLines, parseIcsSchedules, parseOcrSchedules, tabSeparated } from "../app/lib/domain";
 import { EMPTY_STATE, type AppState, type ExpenseLine, type ScheduleItem } from "../app/lib/types";
 
 const expense = (id: string, patch: Partial<ExpenseLine> = {}): ExpenseLine => ({
@@ -46,4 +46,29 @@ test("1日の予定を時刻順につないで最終戻り先まで経路化", (
 test("iPhoneカレンダーICSから予定候補を作る", () => {
   const items = parseIcsSchedules("BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART:20260715T100000\nDTEND:20260715T110000\nSUMMARY:学校訪問\nLOCATION:浦和高校\nEND:VEVENT\nEND:VCALENDAR");
   assert.equal(items[0].date, "2026-07-15"); assert.equal(items[0].startTime, "10:00"); assert.equal(items[0].location, "浦和高校");
+});
+
+test("OCRは日付・時刻・予定名を組み合わせ、複数予定を正しく分ける", () => {
+  const items = parseOcrSchedules(`2026年7月15日（水）
+10:00 - 11:00
+学校訪問
+場所：浦和高校
+13:00 - 14:00 会議
+場所：大宮本部`, "2026-07", "画像OCR");
+  assert.deepEqual(items.map(({ date, startTime, endTime, title, location }) => ({ date, startTime, endTime, title, location })), [
+    { date: "2026-07-15", startTime: "10:00", endTime: "11:00", title: "学校訪問", location: "浦和高校" },
+    { date: "2026-07-15", startTime: "13:00", endTime: "14:00", title: "会議", location: "大宮本部" },
+  ]);
+});
+
+test("OCRはブラウザやアプリの操作文字を予定として取り込まない", () => {
+  const items = parseOcrSchedules(`7月16日（木） 9:12
+ChatGPT File Edit View Window Help
+出張旅費申請書作成アプリ
+09:00 - 10:00
+確認する
+画像OCR
+業務
+移動あり`, "2026-07", "画像OCR");
+  assert.deepEqual(items, []);
 });

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { loadState, saveState } from "./lib/db";
-import { buildDayRoute, copyPages, duplicateKeys, isPassCovered, outputLines, parseIcsSchedules, parseTextSchedules, tabSeparated, uid, yen } from "./lib/domain";
+import { buildDayRoute, copyPages, duplicateKeys, isPassCovered, outputLines, parseIcsSchedules, parseOcrSchedules, parseTextSchedules, tabSeparated, uid, yen } from "./lib/domain";
 import { createExcel } from "./lib/excel";
 import { EMPTY_STATE, type AppState, type CommuterPass, type ExpenseLine, type ScheduleItem } from "./lib/types";
 
@@ -133,8 +133,23 @@ function ExpenseCard({ line, onUpdate, onRemove }: { line: ExpenseLine; onUpdate
 }
 
 function ImportView({ state, mutate, setNotice }: any) {
-  const [text, setText] = useState(""); const [processing, setProcessing] = useState("");
-  const addParsed = (items: ScheduleItem[]) => { mutate((d: AppState) => ({ ...d, schedules: [...d.schedules, ...items] })); setNotice(`${items.length}件を候補として取り込みました。内容を確認してください。`); };
+  const [text, setText] = useState(""); const [processing, setProcessing] = useState(""); const [ocrText, setOcrText] = useState("");
+  const addParsed = (items: ScheduleItem[]) => {
+    if (!items.length) { setNotice("日付・時刻を含む予定を検出できませんでした。予定部分だけが見える画像を使うか、手入力してください。"); return; }
+    mutate((d: AppState) => ({ ...d, schedules: [...d.schedules, ...items] })); setNotice(`${items.length}件を候補として取り込みました。内容を確認してください。`);
+  };
+  async function prepareImage(file: File): Promise<HTMLCanvasElement> {
+    const bitmap = await createImageBitmap(file); const scale = Math.min(2, 2600 / bitmap.width);
+    const canvas = document.createElement("canvas"); canvas.width = Math.round(bitmap.width * scale); canvas.height = Math.round(bitmap.height * scale);
+    const context = canvas.getContext("2d", { willReadFrequently: true })!; context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const image = context.getImageData(0, 0, canvas.width, canvas.height);
+    for (let index = 0; index < image.data.length; index += 4) {
+      const gray = image.data[index] * .299 + image.data[index + 1] * .587 + image.data[index + 2] * .114;
+      const contrast = Math.max(0, Math.min(255, (gray - 128) * 1.35 + 128));
+      image.data[index] = contrast; image.data[index + 1] = contrast; image.data[index + 2] = contrast;
+    }
+    context.putImageData(image, 0, 0); bitmap.close(); return canvas;
+  }
   async function files(files: FileList | null) {
     if (!files?.length) return; setProcessing(`${files.length}ファイルを端末内で解析中…`);
     const items: ScheduleItem[] = [];
@@ -144,12 +159,13 @@ function ImportView({ state, mutate, setNotice }: any) {
           const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
           const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
           let content = ""; for (let p = 1; p <= pdf.numPages; p += 1) { const page = await pdf.getPage(p); const tc = await page.getTextContent(); content += tc.items.map((i: any) => i.str).join(" ") + "\n"; }
-          items.push(...parseTextSchedules(content, state.selectedMonth, "PDF"));
+          setOcrText((current) => `${current}${current ? "\n\n" : ""}${content}`); items.push(...parseOcrSchedules(content, state.selectedMonth, "PDF"));
         } else if (file.type.startsWith("image/")) {
-          const { createWorker } = await import("tesseract.js");
+          const { createWorker, PSM } = await import("tesseract.js");
           const worker = await createWorker("jpn", 1, { langPath: "/tessdata" });
-          const result = await worker.recognize(file); await worker.terminate();
-          items.push(...parseTextSchedules(result.data.text, state.selectedMonth, "画像OCR"));
+          await worker.setParameters({ tessedit_pageseg_mode: PSM.AUTO, preserve_interword_spaces: "1" });
+          const result = await worker.recognize(await prepareImage(file)); await worker.terminate();
+          setOcrText((current) => `${current}${current ? "\n\n" : ""}${result.data.text}`); items.push(...parseOcrSchedules(result.data.text, state.selectedMonth, "画像OCR"));
         } else if (file.name.toLowerCase().endsWith(".ics")) items.push(...parseIcsSchedules(await file.text()));
         else items.push(...parseTextSchedules(await file.text(), state.selectedMonth, file.name.endsWith(".csv") ? "CSV" : "テキスト"));
       }
@@ -160,9 +176,9 @@ function ImportView({ state, mutate, setNotice }: any) {
   function update(id: string, patch: Partial<ScheduleItem>) { mutate((d: AppState) => { Object.assign(d.schedules.find((x) => x.id === id)!, patch); return d; }); }
   return <section className="panel"><div className="panel-heading"><div><span className="eyebrow">端末内で読み取り</span><h2>予定を取り込む</h2><p>スクリーンショットやPDFは外部AIへ送信せず、このブラウザ内で解析します。</p></div></div>
     <div className="import-grid"><label className="dropzone"><input type="file" multiple accept="image/*,.pdf,.csv,.txt,.ics" onChange={(e) => files(e.target.files)} /><b>画像・PDF・CSVを選択</b><span>複数画像・iPhoneカレンダー書き出しにも対応</span></label><div className="paste-box"><textarea aria-label="予定テキスト" placeholder={'例：7/15\t10:00-11:00\t学校訪問\t浦和高校'} value={text} onChange={(e) => setText(e.target.value)} /><div className="button-row"><button className="secondary" onClick={() => addParsed([{ id: uid(), date: `${state.selectedMonth}-01`, startTime: "09:00", endTime: "10:00", title: "", location: "", isBusiness: true, hasTravel: true, confirmed: false, source: "手入力" }])}>手入力で予定を追加</button><button className="primary" onClick={() => { addParsed(parseTextSchedules(text, state.selectedMonth, text.includes(",") ? "CSV" : "テキスト")); setText(""); }}>テキストから候補作成</button></div></div></div>
-    {processing && <div className="processing">{processing}</div>}
-    <h3>OCR・取込結果の確認</h3><p className="section-note">自動確定はしません。日付・時刻・予定名・場所・業務区分・移動有無を確認してください。</p>
-    <div className="schedule-table"><div className="schedule-head"><span>日時</span><span>予定名・場所</span><span>区分</span><span>確認</span></div>{state.schedules.filter((s: ScheduleItem) => s.date.startsWith(state.selectedMonth)).map((item: ScheduleItem) => <div className="schedule-row" key={item.id}><div><input type="date" value={item.date} onChange={(e) => update(item.id, { date: e.target.value })} /><div className="inline"><input type="time" value={item.startTime} onChange={(e) => update(item.id, { startTime: e.target.value })} /><span>–</span><input type="time" value={item.endTime} onChange={(e) => update(item.id, { endTime: e.target.value })} /></div></div><div><input placeholder="予定名" value={item.title} onChange={(e) => update(item.id, { title: e.target.value })} /><input placeholder="場所" value={item.location} onChange={(e) => update(item.id, { location: e.target.value })} /></div><div><label><input type="checkbox" checked={item.isBusiness} onChange={(e) => update(item.id, { isBusiness: e.target.checked })} />業務</label><label><input type="checkbox" checked={item.hasTravel} onChange={(e) => update(item.id, { hasTravel: e.target.checked })} />移動あり</label></div><div><button className={item.confirmed ? "confirmed" : "secondary"} onClick={() => update(item.id, { confirmed: !item.confirmed })}>{item.confirmed ? "確認済み" : "確認する"}</button><small>{item.source}</small></div></div>)}</div>
+    {processing && <div className="processing">{processing}</div>}{ocrText && <details className="ocr-raw"><summary>読み取った文字を確認</summary><pre>{ocrText}</pre></details>}
+    <div className="section-title-row"><div><h3>OCR・取込結果の確認</h3><p className="section-note">自動確定はしません。日付・時刻・予定名・場所・業務区分・移動有無を確認してください。</p></div><button className="secondary" onClick={() => { mutate((d: AppState) => ({ ...d, schedules: d.schedules.filter((item) => item.confirmed || !item.date.startsWith(d.selectedMonth)) })); setNotice("今月の未確認候補を削除しました"); }}>今月の未確認候補をすべて削除</button></div>
+    <div className="schedule-table"><div className="schedule-head"><span>日時</span><span>予定名・場所</span><span>区分</span><span>確認</span></div>{state.schedules.filter((s: ScheduleItem) => s.date.startsWith(state.selectedMonth)).map((item: ScheduleItem) => <div className="schedule-row" key={item.id}><div><input type="date" value={item.date} onChange={(e) => update(item.id, { date: e.target.value })} /><div className="inline"><input type="time" value={item.startTime} onChange={(e) => update(item.id, { startTime: e.target.value })} /><span>–</span><input type="time" value={item.endTime} onChange={(e) => update(item.id, { endTime: e.target.value })} /></div></div><div><input placeholder="予定名" value={item.title} onChange={(e) => update(item.id, { title: e.target.value })} /><input placeholder="場所" value={item.location} onChange={(e) => update(item.id, { location: e.target.value })} /></div><div><label><input type="checkbox" checked={item.isBusiness} onChange={(e) => update(item.id, { isBusiness: e.target.checked })} />業務</label><label><input type="checkbox" checked={item.hasTravel} onChange={(e) => update(item.id, { hasTravel: e.target.checked })} />移動あり</label></div><div><button className={item.confirmed ? "confirmed" : "secondary"} onClick={() => update(item.id, { confirmed: !item.confirmed })}>{item.confirmed ? "確認済み" : "確認する"}</button><button className="icon-button" onClick={() => mutate((d: AppState) => ({ ...d, schedules: d.schedules.filter((candidate) => candidate.id !== item.id) }))}>削除</button><small>{item.source}</small></div></div>)}</div>
   </section>;
 }
 

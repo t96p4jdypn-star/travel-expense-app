@@ -93,6 +93,71 @@ export function parseTextSchedules(text: string, month: string, source: Schedule
   });
 }
 
+const OCR_NOISE = /(?:ChatGPT|\bFile\b|\bEdit\b|\bView\b|\bWindow\b|\bHelp\b|共有|確認する|確認済み|画像OCR|移動あり|出張旅費申請書作成アプリ|対象月|バックアップ|復元|予定取込|経路確認|コピー出力|Excel出力)/i;
+
+function isOcrNoise(value: string): boolean {
+  return OCR_NOISE.test(value) || /^(?:業務|場所|設定|月|日|時刻|予定名)[：:]?$/.test(value);
+}
+
+function dateFromOcr(line: string, year: number): string | null {
+  const match = line.match(/(?:(\d{4})\s*[年\/.-]\s*)?(\d{1,2})\s*(?:月|[\/.-])\s*(\d{1,2})\s*日?/);
+  if (!match) return null;
+  const y = Number(match[1] || year); const month = Number(match[2]); const day = Number(match[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return `${y}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function timesFromOcr(line: string): string[] {
+  return [...line.matchAll(/(?:^|[^0-9])(\d{1,2})\s*(?::|時)\s*(\d{2})(?:\s*分)?/g)]
+    .map((match) => [Number(match[1]), Number(match[2])])
+    .filter(([hour, minute]) => hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59)
+    .map(([hour, minute]) => `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`);
+}
+
+function cleanOcrText(line: string): string {
+  return line
+    .replace(/(?:\d{4}\s*[年\/.-]\s*\d{1,2}\s*(?:月|[\/.-])\s*\d{1,2}\s*日?|\d{1,2}\s*(?:月|[\/.])\s*\d{1,2}\s*日)(?:\s*[（(][^）)]*[）)])?/g, " ")
+    .replace(/\d{1,2}\s*(?::|時)\s*\d{2}(?:\s*分)?/g, " ")
+    .replace(/^[\s|｜:：\-–—〜～]+|[\s|｜:：\-–—〜～]+$/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+/** OCR/PDF向け。日付と時刻を検出できた予定だけを候補化し、画面UI文字を予定にしない。 */
+export function parseOcrSchedules(text: string, selectedMonth: string, source: "画像OCR" | "PDF"): ScheduleItem[] {
+  const year = Number(selectedMonth.slice(0, 4));
+  const lines = text.replace(/\r/g, "").split("\n").map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
+  let currentDate: string | null = null;
+  let pending: ScheduleItem | null = null;
+  const result: ScheduleItem[] = [];
+  const flush = () => {
+    if (pending && pending.title.length >= 2 && !isOcrNoise(pending.title)) result.push(pending);
+    pending = null;
+  };
+  for (const line of lines) {
+    const foundDate = dateFromOcr(line, year);
+    if (foundDate) currentDate = foundDate;
+    const times = timesFromOcr(line);
+    const cleaned = cleanOcrText(line);
+    if (times.length && currentDate) {
+      flush();
+      pending = {
+        id: uid(), date: currentDate, startTime: times[0], endTime: times[1] ?? times[0],
+        title: isOcrNoise(cleaned) ? "" : cleaned, location: "", isBusiness: true,
+        hasTravel: true, confirmed: false, source,
+      };
+      continue;
+    }
+    if (!pending || !cleaned || isOcrNoise(cleaned) || cleaned.length < 2) continue;
+    const location = cleaned.match(/^(?:場所|会場|訪問先)\s*[:：]\s*(.+)$/)?.[1];
+    if (location) pending.location = location;
+    else if (!pending.title) pending.title = cleaned;
+    else if (!pending.location && /(?:校|教室|本部|支社|会議室|センター|駅|市|区|町|ビル)$/.test(cleaned)) pending.location = cleaned;
+  }
+  flush();
+  return result.filter((item) => item.date.startsWith(selectedMonth));
+}
+
 export function parseIcsSchedules(text: string): ScheduleItem[] {
   const unfolded = text.replace(/\r?\n[ \t]/g, "");
   return unfolded.split("BEGIN:VEVENT").slice(1).map((block) => {
