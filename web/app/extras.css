@@ -72,7 +72,7 @@
 .destination-chips { justify-content: flex-start; flex-wrap: wrap; margin: 15px 0; }
 .destination-chips > span { color: #66736e; font-size: .8rem; }
 .destination-chips button { padding: 7px 11px; border: 1px solid #c7d8d2; border-radius: 999px; background: white; color: #174d40; }
-.quick-add-grid { display: grid; grid-template-columns: 1.1fr .8fr 1.5fr 1.1fr 1.2fr auto; gap: 10px; align-items: end; }
+.quick-add-grid { display: grid; grid-template-columns: 1.05fr .75fr 1.4fr 1fr .9fr 1.15fr auto; gap: 10px; align-items: end; }
 .quick-submit { min-height: 44px; white-space: nowrap; }
 .fare-source { padding: 5px 8px; border-radius: 999px; background: #eef3f1; color: #42534e; font-size: .75rem; }
 .fare-自動計算 { background: #e0f3e9; color: #17633f; }

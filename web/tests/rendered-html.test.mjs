@@ -38,6 +38,8 @@ test("公開物にPWA定義と端末内OCRモデルを同梱する", async () =>
   assert.match(app, /ブラウザ内の運賃台帳/);
   assert.match(app, /再計算/);
   assert.match(app, /確定して登録/);
+  assert.match(app, /簡単入力のIC料金/);
+  assert.match(app, /初回は入力してください/);
   assert.match(app, /登録状況/);
   assert.doesNotMatch(app, /fetch\("\/api\/fare"/);
   assert.match(app, /スクリーンショットを貼り付け/);

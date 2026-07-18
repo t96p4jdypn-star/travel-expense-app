@@ -107,8 +107,9 @@ export function TravelExpenseApp() {
   }
   function removeExpense(id: string) { mutate((draft) => ({ ...draft, expenses: draft.expenses.filter((line) => line.id !== id) })); }
 
-  async function quickAdd(input: { date: string; startTime: string; destination: string; nearestStation?: string; reason?: string }) {
-    const line = suggestExpenseFromDestination(state, input);
+  async function quickAdd(input: { date: string; startTime: string; destination: string; nearestStation?: string; reason?: string; icFare?: number }) {
+    let line = suggestExpenseFromDestination(state, input);
+    if (!line.passCovered && Number(input.icFare) > 0 && Number(input.icFare) !== Number(line.icFare)) line = { ...line, icFare: Number(input.icFare), claimAmount: Number(input.icFare), hiddenZero: false, fareSource: "手入力", fareCheckedAt: undefined };
     const message = line.fareSource === "登録運賃" ? `端末内の登録運賃 ${yen(Number(line.icFare))} で自動計算しました。` : line.fareSource === "履歴・要確認" ? "以前の金額を候補にしました。現在のIC料金を確認し、確定してください。" : "初めての区間です。IC料金を入力して確定すると、次回から自動計算します。";
     mutate((draft) => {
       if (input.nearestStation && !draft.places.some((item) => item.name === input.destination.trim())) draft.places.push({ id: uid(), name: input.destination.trim(), nearestStation: input.nearestStation.trim(), route: line.routeDetails || "", reason: input.reason?.trim() || "", visitCount: 0, lastUsedAt: "" });
@@ -174,23 +175,25 @@ function MonthlyView({ state, lines, total, warnings, showZero, setShowZero, onA
   </section>;
 }
 
-function QuickAdd({ state, onAdd }: { state: AppState; onAdd: (input: { date: string; startTime: string; destination: string; nearestStation?: string; reason?: string }) => Promise<void> }) {
+function QuickAdd({ state, onAdd }: { state: AppState; onAdd: (input: { date: string; startTime: string; destination: string; nearestStation?: string; reason?: string; icFare?: number }) => Promise<void> }) {
   const today = new Date().toISOString().slice(0, 10); const initialDate = today.startsWith(state.selectedMonth) ? today : `${state.selectedMonth}-01`;
   const [date, setDate] = useState(initialDate); const [startTime, setStartTime] = useState("09:00"); const [destination, setDestination] = useState("");
-  const [nearestStation, setNearestStation] = useState(""); const [reason, setReason] = useState(""); const [busy, setBusy] = useState(false);
+  const [nearestStation, setNearestStation] = useState(""); const [reason, setReason] = useState(""); const [icFare, setIcFare] = useState(0); const [fareRegistered, setFareRegistered] = useState(false); const [busy, setBusy] = useState(false);
   useEffect(() => { const current = new Date().toISOString().slice(0, 10); setDate(current.startsWith(state.selectedMonth) ? current : `${state.selectedMonth}-01`); }, [state.selectedMonth]);
   const names = [...new Set([...state.places.map((item) => item.name), ...state.history.map((item) => item.destination)])];
   const ranked = names.map((name) => ({ name, score: (state.places.find((item) => item.name === name)?.visitCount || 0) + (state.history.filter((item) => item.destination === name).reduce((sum, item) => sum + item.count, 0) * 2), recent: state.history.filter((item) => item.destination === name).sort((a, b) => b.usedAt.localeCompare(a.usedAt))[0]?.usedAt || "" })).sort((a, b) => b.recent.localeCompare(a.recent) || b.score - a.score);
   function select(name: string) {
     setDestination(name); const place = state.places.find((item) => item.name === name); const history = [...state.history].filter((item) => item.destination === name).sort((a, b) => b.count - a.count || b.usedAt.localeCompare(a.usedAt))[0];
-    setNearestStation(place?.nearestStation || history?.arrival || ""); setReason(place?.reason || history?.reason || "");
+    const station = place?.nearestStation || history?.arrival || ""; setNearestStation(station); setReason(place?.reason || history?.reason || "");
+    const suggestion = name.trim() ? suggestExpenseFromDestination(state, { date, startTime, destination: name, nearestStation: station }) : {};
+    setIcFare(Number(suggestion.icFare || 0)); setFareRegistered(suggestion.fareSource === "登録運賃" || Boolean(suggestion.passCovered));
   }
   async function submit() {
-    if (!date || !destination.trim()) return; setBusy(true); await onAdd({ date, startTime, destination, nearestStation, reason }); setBusy(false); setDestination(""); setNearestStation(""); setReason("");
+    if (!date || !destination.trim()) return; setBusy(true); await onAdd({ date, startTime, destination, nearestStation, reason, icFare }); setBusy(false); setDestination(""); setNearestStation(""); setReason(""); setIcFare(0); setFareRegistered(false);
   }
   return <div className="quick-add"><div className="quick-add-title"><div><span className="eyebrow">最短入力</span><h3>日付と行き先から自動で作成</h3></div><span className="auto-hint">登録した区間はブラウザ内で自動計算</span></div>
     {ranked.length > 0 && <div className="destination-chips"><span>最近・よく使う</span>{ranked.slice(0, 6).map((item) => <button key={item.name} onClick={() => select(item.name)}>{item.name}</button>)}</div>}
-    <div className="quick-add-grid"><Field label="日付"><input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></Field><Field label="時刻"><input type="time" value={startTime} onChange={(event) => setStartTime(event.target.value)} /></Field><Field label="行き先"><input list="quick-destinations" placeholder="例：浦和高校" value={destination} onChange={(event) => select(event.target.value)} /><datalist id="quick-destinations">{ranked.map((item) => <option key={item.name} value={item.name} />)}</datalist></Field><Field label="最寄駅" hint="初回だけ。次回から自動"><input placeholder="例：浦和" value={nearestStation} onChange={(event) => setNearestStation(event.target.value)} /></Field><Field label="移動理由" hint="初回だけ。次回から自動"><input placeholder="例：学校訪問" value={reason} onChange={(event) => setReason(event.target.value)} /></Field><button className="primary quick-submit" disabled={busy || !destination.trim()} onClick={submit}>{busy ? "計算中…" : "追加して計算"}</button></div>
+    <div className="quick-add-grid"><Field label="日付"><input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></Field><Field label="時刻"><input type="time" value={startTime} onChange={(event) => setStartTime(event.target.value)} /></Field><Field label="行き先"><input list="quick-destinations" placeholder="例：浦和高校" value={destination} onChange={(event) => select(event.target.value)} /><datalist id="quick-destinations">{ranked.map((item) => <option key={item.name} value={item.name} />)}</datalist></Field><Field label="最寄駅" hint="初回だけ。次回から自動"><input placeholder="例：浦和" value={nearestStation} onChange={(event) => { setNearestStation(event.target.value); setFareRegistered(false); }} /></Field><Field label="IC料金" hint={fareRegistered ? "登録運賃を自動表示" : "初回は入力してください"}><div className="money-input"><span>¥</span><input aria-label="簡単入力のIC料金" inputMode="numeric" placeholder="例：406" value={icFare || ""} onChange={(event) => { setIcFare(Math.max(0, Number(event.target.value))); setFareRegistered(false); }} /></div></Field><Field label="移動理由" hint="初回だけ。次回から自動"><input placeholder="例：学校訪問" value={reason} onChange={(event) => setReason(event.target.value)} /></Field><button className="primary quick-submit" disabled={busy || !destination.trim()} onClick={submit}>{busy ? "計算中…" : "追加して確認"}</button></div>
   </div>;
 }
 
