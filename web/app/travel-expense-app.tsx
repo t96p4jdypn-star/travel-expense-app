@@ -2,12 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { loadState, saveState } from "./lib/db";
-import { buildDayRoute, copyPages, duplicateKeys, findFareRule, isPassCovered, outputLines, parseIcsSchedules, parseOcrSchedules, parseTextSchedules, recalculateExpenseLine, suggestExpenseFromDestination, tabSeparated, uid, yen } from "./lib/domain";
+import { buildDayRoute, copyPages, duplicateKeys, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, parseTextSchedules, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated, uid, yen } from "./lib/domain";
 import { createExcel } from "./lib/excel";
-import { EMPTY_STATE, normalizeState, type AppState, type CommuterPass, type ExpenseLine, type ScheduleCapture, type ScheduleItem } from "./lib/types";
+import { EMPTY_STATE, normalizeState, type AppState, type ClaimMaster, type CommuterPass, type ExpenseLine, type ScheduleCapture, type ScheduleItem } from "./lib/types";
 
-type Tab = "月間" | "予定取込" | "経路確認" | "登録状況" | "コピー出力" | "Excel出力" | "設定";
-const TABS: Tab[] = ["月間", "予定取込", "経路確認", "登録状況", "コピー出力", "Excel出力", "設定"];
+type Tab = "実績から作成" | "過去データ読込" | "月間" | "予定取込" | "経路確認" | "登録状況" | "コピー出力" | "Excel出力" | "設定";
+const TABS: Tab[] = ["実績から作成", "過去データ読込", "月間", "予定取込", "経路確認", "登録状況", "コピー出力", "Excel出力", "設定"];
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 
 function download(blob: Blob, filename: string) {
@@ -28,7 +28,7 @@ function StatusBadge({ value }: { value: string }) { return <span className={`st
 export function TravelExpenseApp() {
   const [state, setState] = useState<AppState>(EMPTY_STATE);
   const [ready, setReady] = useState(false);
-  const [tab, setTab] = useState<Tab>("月間");
+  const [tab, setTab] = useState<Tab>("実績から作成");
   const [showZero, setShowZero] = useState(false);
   const [notice, setNotice] = useState("データはこの端末内だけに保存されます");
   const [submissionDate, setSubmissionDate] = useState(new Date().toISOString().slice(0, 10));
@@ -146,6 +146,8 @@ export function TravelExpenseApp() {
         <div className="header-actions"><button className="secondary" onClick={backup}>バックアップ</button><button className="secondary" onClick={() => importRef.current?.click()}>復元</button><input ref={importRef} hidden type="file" accept="application/json" onChange={(e) => e.target.files?.[0] && restore(e.target.files[0])} /></div>
       </section>
       {notice && <div className="notice" role="status"><span>✓</span>{notice}<button aria-label="通知を閉じる" onClick={() => setNotice("")}>×</button></div>}
+      {tab === "実績から作成" && <MasterEntryView state={state} mutate={mutate} setNotice={setNotice} setTab={setTab} />}
+      {tab === "過去データ読込" && <PastClaimsImportView state={state} mutate={mutate} setNotice={setNotice} />}
       {tab === "月間" && <MonthlyView state={state} lines={visibleExpenses} total={total} warnings={warnings} showZero={showZero} setShowZero={setShowZero} onAdd={addExpense} onQuickAdd={quickAdd} onUpdate={updateExpense} onRecalculate={recalculateExpense} onConfirm={confirmExpense} onRemove={removeExpense} history={state.history} />}
       {tab === "予定取込" && <ImportView state={state} mutate={mutate} setNotice={setNotice} />}
       {tab === "経路確認" && <RouteView state={state} mutate={mutate} setNotice={setNotice} onUpdate={updateExpense} />}
@@ -162,6 +164,64 @@ export function TravelExpenseApp() {
     mutate((draft) => { lines.forEach((out) => { const line = draft.expenses.find((x) => x.id === out.id); if (line) line.state = "申請済み"; }); return draft; });
     setNotice("今回の出力分を申請済みにしました");
   }
+}
+
+function PastClaimsImportView({ state, mutate, setNotice }: { state: AppState; mutate: (updater: (draft: AppState) => AppState) => void; setNotice: (value: string) => void }) {
+  const [busy, setBusy] = useState(false); const [preview, setPreview] = useState<ReturnType<typeof parseClaimRows>>([]); const [fileName, setFileName] = useState("");
+  async function readFile(file: File) {
+    setBusy(true); setFileName(file.name);
+    try {
+      let rows: unknown[][] = [];
+      if (/\.xlsx$/i.test(file.name)) {
+        const ExcelJS = await import("exceljs"); const workbook = new ExcelJS.Workbook(); await workbook.xlsx.load(await file.arrayBuffer());
+        workbook.worksheets.forEach((sheet) => { for (let row = 11; row <= 30; row += 1) rows.push([sheet.getCell(`A${row}`).value, sheet.getCell(`B${row}`).value, sheet.getCell(`C${row}`).value, sheet.getCell(`D${row}`).value, sheet.getCell(`F${row}`).value, sheet.getCell(`G${row}`).value]); });
+      } else {
+        rows = (await file.text()).split(/\r?\n/).filter(Boolean).map((line) => line.split(file.name.toLowerCase().endsWith(".tsv") || line.includes("\t") ? "\t" : ","));
+      }
+      const parsed = parseClaimRows(rows, Number(state.selectedMonth.slice(0, 4))); setPreview(parsed);
+      setNotice(parsed.length ? `${parsed.length}行を読み取りました。内容を確認してマスタへ登録してください。` : "申請明細を検出できませんでした。原本形式または6列のCSVを確認してください。");
+    } catch { setPreview([]); setNotice("過去請求データを読み込めませんでした。XLSX・CSV・TSVファイルを確認してください。"); }
+    setBusy(false);
+  }
+  function register() {
+    if (!preview.length) return;
+    mutate((draft) => {
+      const before = draft.claimMasters.length; draft.claimMasters = mergeClaimMasters(draft.claimMasters, preview, fileName);
+      draft.claimImports.push({ id: uid(), fileName, importedAt: new Date().toISOString(), rowCount: preview.length, addedCount: draft.claimMasters.length - before }); return draft;
+    });
+    setNotice(`${preview.length}行を過去実績マスタへ登録しました。`); setPreview([]); setFileName("");
+  }
+  return <section className="panel"><div className="panel-heading"><div><span className="eyebrow">ver2 最初の準備</span><h2>過去の出張旅費請求を読み込む</h2><p>申請書の11～30行、または「月・日・目的地・有料区間・IC料金・理由」の6列データから実績マスタを作ります。</p></div><div className="summary-card"><span>登録済み実績</span><strong>{state.claimMasters.length}</strong><small>{state.claimImports.length}ファイル取込済み</small></div></div>
+    <label className="past-claim-drop"><input type="file" accept=".xlsx,.csv,.tsv,text/csv" onChange={(event) => event.target.files?.[0] && void readFile(event.target.files[0])} /><b>{busy ? "読み込み中…" : "過去の申請書を選択"}</b><span>XLSX・CSV・TSV／データは外部へ送信しません</span></label>
+    {preview.length > 0 && <><div className="import-preview"><div className="import-preview-head"><span>日付</span><span>目的地</span><span>有料区間</span><span>IC料金</span><span>理由</span></div>{preview.slice(0, 40).map((row, index) => <div key={`${row.date}-${index}`}><span>{row.date.slice(5)}</span><b>{row.destination}</b><span>{row.paidSection}</span><strong>{yen(row.icFare)}</strong><span>{row.reason}</span></div>)}</div><div className="import-confirm"><span>{fileName}：{preview.length}行</span><button className="primary" onClick={register}>確認して実績マスタへ登録</button></div></>}
+    {state.claimImports.length > 0 && <div className="import-history"><h3>読込履歴</h3>{[...state.claimImports].reverse().map((item) => <div key={item.id}><b>{item.fileName}</b><span>{item.rowCount}行（新規 {item.addedCount}件）</span><small>{new Date(item.importedAt).toLocaleString("ja-JP")}</small></div>)}</div>}
+  </section>;
+}
+
+function MasterEntryView({ state, mutate, setNotice, setTab }: { state: AppState; mutate: (updater: (draft: AppState) => AppState) => void; setNotice: (value: string) => void; setTab: (tab: Tab) => void }) {
+  const initialDate = `${state.selectedMonth}-01`; const [date, setDate] = useState(initialDate); const [selectedId, setSelectedId] = useState("");
+  const [draft, setDraft] = useState({ destination: "", paidSection: "", icFare: 0, reason: "", startTime: "09:00" });
+  useEffect(() => { setDate(`${state.selectedMonth}-01`); }, [state.selectedMonth]);
+  const masters = [...state.claimMasters].sort((a, b) => b.useCount - a.useCount || b.lastUsedDate.localeCompare(a.lastUsedDate));
+  function select(master: ClaimMaster) { setSelectedId(master.id); setDraft({ destination: master.destination, paidSection: master.paidSection, icFare: master.icFare, reason: master.reason, startTime: "09:00" }); }
+  function confirm() {
+    if (!date || !draft.destination.trim() || !draft.paidSection.trim() || draft.icFare <= 0) return setNotice("日付・目的地・有料区間・IC料金を入力してください。");
+    const stations = stationsFromSection(draft.paidSection); const now = new Date().toISOString();
+    mutate((stateDraft) => {
+      const routeOrder = stateDraft.expenses.filter((line) => line.date === date).length;
+      stateDraft.expenses.push({ id: uid(), date, startTime: draft.startTime, destination: draft.destination.trim(), origin: stations.origin, arrival: stations.arrival, paidSection: draft.paidSection.trim(), icFare: draft.icFare, claimAmount: draft.icFare, reason: draft.reason.trim(), state: "確認済み", routeOrder, duplicateWarning: false, passCovered: false, hiddenZero: false, createdAt: now, fareSource: "登録運賃", fareCheckedAt: now });
+      stateDraft.claimMasters = mergeClaimMasters(stateDraft.claimMasters, [{ date, destination: draft.destination.trim(), paidSection: draft.paidSection.trim(), icFare: draft.icFare, reason: draft.reason.trim() }], selectedId ? stateDraft.claimMasters.find((item) => item.id === selectedId)?.sourceName || "画面修正" : "新規入力");
+      return stateDraft;
+    });
+    setNotice(`${date} の申請行を確定しました。続けて次の日付を選択できます。`); setSelectedId(""); setDraft({ destination: "", paidSection: "", icFare: 0, reason: "", startTime: "09:00" });
+  }
+  const confirmedDates = [...new Set(state.expenses.filter((line) => line.date.startsWith(state.selectedMonth) && ["確認済み", "修正済み"].includes(line.state)).map((line) => line.date))].sort();
+  return <section className="panel"><div className="panel-heading"><div><span className="eyebrow">ver2 主な入力</span><h2>日付を選び、過去実績から確定</h2><p>日付を変えながら実績を呼び出し、必要な箇所だけ修正して確定します。新しい訪問先も同じ欄へ直接入力できます。</p></div><div className="summary-card"><span>今月の確定日</span><strong>{confirmedDates.length}</strong><small>{state.expenses.filter((line) => line.date.startsWith(state.selectedMonth) && ["確認済み", "修正済み"].includes(line.state)).length}行</small></div></div>
+    {!masters.length && <div className="start-import"><div><b>過去実績マスタがまだありません</b><span>先に過去の申請書を読み込むか、新規訪問先として直接入力できます。</span></div><button className="primary" onClick={() => setTab("過去データ読込")}>過去データ読込へ</button></div>}
+    {masters.length > 0 && <div className="master-picker"><span>よく使う実績</span>{masters.slice(0, 12).map((master) => <button key={master.id} className={selectedId === master.id ? "selected" : ""} onClick={() => select(master)}><b>{master.destination}</b><small>{master.paidSection}・{yen(master.icFare)}・{master.useCount}回</small></button>)}</div>}
+    <div className="claim-form"><Field label="月"><input value={Number(date.slice(5, 7)) || ""} readOnly /></Field><Field label="日"><input aria-label="申請日" type="date" value={date} onChange={(event) => setDate(event.target.value)} /></Field><Field label="教室名または目的地"><input value={draft.destination} onChange={(event) => setDraft((value) => ({ ...value, destination: event.target.value }))} /></Field><Field label="切符代がかかった区間"><input value={draft.paidSection} placeholder="池袋→浦和" onChange={(event) => setDraft((value) => ({ ...value, paidSection: event.target.value }))} /></Field><Field label="IC料金"><div className="money-input"><span>¥</span><input inputMode="numeric" value={draft.icFare || ""} onChange={(event) => setDraft((value) => ({ ...value, icFare: Math.max(0, Number(event.target.value)) }))} /></div></Field><Field label="移動の理由"><input value={draft.reason} onChange={(event) => setDraft((value) => ({ ...value, reason: event.target.value }))} /></Field><button className="primary claim-confirm" onClick={confirm}>この日を確定して次へ</button></div>
+    {confirmedDates.length > 0 && <div className="confirmed-days"><span>確定済みの日付</span>{confirmedDates.map((value) => <button key={value} onClick={() => setDate(value)}>{Number(value.slice(5, 7))}/{Number(value.slice(8, 10))}</button>)}<button className="secondary" onClick={() => setTab("登録状況")}>一覧と書き出し対象を確認</button></div>}
+  </section>;
 }
 
 function MonthlyView({ state, lines, total, warnings, showZero, setShowZero, onAdd, onQuickAdd, onUpdate, onRecalculate, onConfirm, onRemove, history }: any) {

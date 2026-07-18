@@ -121,6 +121,43 @@
 .ocr-lab summary span { color: #7b8581; font-size: .8rem; font-weight: 400; }
 .ocr-lab[open] summary { margin-bottom: 16px; }
 
+.past-claim-drop {
+  display: grid;
+  place-items: center;
+  min-height: 145px;
+  padding: 24px;
+  border: 2px dashed #94b8ac;
+  border-radius: 16px;
+  background: #f5faf8;
+  cursor: pointer;
+  text-align: center;
+}
+.past-claim-drop input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.past-claim-drop b { color: #174d40; font-size: 1.05rem; }
+.past-claim-drop span { margin-top: 6px; color: #68756f; font-size: .84rem; }
+.import-preview { overflow: hidden; margin-top: 18px; border: 1px solid #d9e2df; border-radius: 14px; }
+.import-preview > div { display: grid; grid-template-columns: 72px 1.2fr 1.4fr 100px 1fr; gap: 12px; align-items: center; padding: 10px 14px; border-bottom: 1px solid #e4e9e7; }
+.import-preview > div:last-child { border-bottom: 0; }
+.import-preview-head { background: #edf5f1; color: #456158; font-size: .78rem; font-weight: 700; }
+.import-confirm { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }
+.import-history { margin-top: 28px; }
+.import-history > div { display: grid; grid-template-columns: 1fr auto auto; gap: 16px; padding: 10px 0; border-bottom: 1px solid #e2e8e5; }
+.import-history small { color: #71807a; }
+.start-import { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 18px; padding: 16px; border: 1px solid #eed79d; border-radius: 14px; background: #fff9e8; }
+.start-import div { display: grid; gap: 4px; }
+.start-import span { color: #6d6758; font-size: .85rem; }
+.master-picker { display: flex; align-items: stretch; gap: 8px; overflow-x: auto; margin-bottom: 18px; padding-bottom: 6px; }
+.master-picker > span { align-self: center; flex: 0 0 auto; color: #68756f; font-size: .8rem; }
+.master-picker button { display: grid; flex: 0 0 auto; gap: 3px; max-width: 240px; padding: 10px 12px; border: 1px solid #cadbd5; border-radius: 12px; background: white; color: #174d40; text-align: left; }
+.master-picker button.selected { border-color: #0e6653; background: #eaf5f0; box-shadow: 0 0 0 2px #0e665322; }
+.master-picker small { overflow: hidden; color: #68756f; text-overflow: ellipsis; white-space: nowrap; }
+.claim-form { display: grid; grid-template-columns: .45fr 1.05fr 1.3fr 1.5fr .75fr 1fr auto; gap: 10px; align-items: end; padding: 18px; border: 1px solid #bfd8cf; border-radius: 16px; background: linear-gradient(135deg, #f2f8f5, #fffdf8); }
+.claim-confirm { min-height: 44px; white-space: nowrap; }
+.confirmed-days { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.confirmed-days > span { color: #68756f; font-size: .82rem; }
+.confirmed-days button:not(.secondary) { padding: 7px 10px; border: 1px solid #cbdad5; border-radius: 999px; background: white; color: #174d40; }
+.confirmed-days .secondary { margin-left: auto; }
+
 @media (max-width: 900px) {
   .place-row { grid-template-columns: 1fr 1fr; }
   .quick-add-grid { grid-template-columns: 1fr 1fr 1fr; }
@@ -128,6 +165,9 @@
   .registration-list > div { grid-template-columns: 60px 1fr 1.2fr 85px; }
   .registration-list .status { grid-column: 2 / -1; justify-self: start; }
   .fare-ledger > div { grid-template-columns: 1fr 1fr; }
+  .claim-form { grid-template-columns: repeat(3, 1fr); }
+  .import-preview > div { grid-template-columns: 65px 1fr 1.2fr 90px; }
+  .import-preview > div > span:last-child { grid-column: 2 / -1; }
 }
 
 @media (max-width: 560px) {
@@ -140,4 +180,8 @@
   .registration-metrics { grid-template-columns: repeat(3, 1fr); }
   .registration-list > div, .fare-ledger > div { grid-template-columns: 1fr; }
   .registration-list .status { grid-column: auto; }
+  .start-import, .import-confirm { align-items: stretch; flex-direction: column; }
+  .claim-form, .import-preview > div, .import-history > div { grid-template-columns: 1fr; }
+  .import-preview > div > span:last-child { grid-column: auto; }
+  .confirmed-days .secondary { width: 100%; margin-left: 0; }
 }

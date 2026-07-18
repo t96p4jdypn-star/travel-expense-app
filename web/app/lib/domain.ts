@@ -1,4 +1,4 @@
-import type { AppState, ExpenseLine, FareRule, ScheduleItem } from "./types";
+import type { AppState, ClaimMaster, ExpenseLine, FareRule, ScheduleItem } from "./types";
 
 export const uid = () => crypto.randomUUID();
 export const monthOf = (date: string) => date.slice(0, 7);
@@ -231,4 +231,34 @@ export function tabSeparated(lines: ExpenseLine[]): string {
     const date = new Date(`${line.date}T00:00:00`);
     return [date.getMonth() + 1, date.getDate(), line.destination, line.paidSection, line.claimAmount, line.reason].join("\t");
   }).join("\n");
+}
+
+export type ImportedClaimRow = { date: string; destination: string; paidSection: string; icFare: number; reason: string };
+
+export function parseClaimRows(rows: unknown[][], fallbackYear: number): ImportedClaimRow[] {
+  return rows.flatMap((row) => {
+    if (!Array.isArray(row)) return [];
+    const month = Number(row[0]); const day = Number(row[1]); const destination = String(row[2] ?? "").trim();
+    const paidSection = String(row[3] ?? "").trim(); const icFare = Number(String(row[4] ?? "").replace(/[,，円¥￥\s]/g, "")); const reason = String(row[5] ?? "").trim();
+    if (!(month >= 1 && month <= 12 && day >= 1 && day <= 31) || !destination || !paidSection || !(icFare > 0)) return [];
+    const date = `${fallbackYear}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    return [{ date, destination, paidSection, icFare, reason }];
+  });
+}
+
+export function stationsFromSection(paidSection: string): { origin: string; arrival: string } {
+  const parts = paidSection.split(/\s*(?:→|⇒|～|〜|~|－|—|-)\s*/).map((part) => part.trim()).filter(Boolean);
+  return { origin: parts[0] ?? "", arrival: parts.at(-1) ?? "" };
+}
+
+export function mergeClaimMasters(existing: ClaimMaster[], rows: ImportedClaimRow[], sourceName: string): ClaimMaster[] {
+  const result = structuredClone(existing);
+  rows.forEach((row) => {
+    const { origin, arrival } = stationsFromSection(row.paidSection);
+    const key = `${row.destination.trim()}|${row.paidSection.replace(/[\s　]/g, "")}|${row.icFare}|${row.reason.trim()}`;
+    const found = result.find((item) => `${item.destination.trim()}|${item.paidSection.replace(/[\s　]/g, "")}|${item.icFare}|${item.reason.trim()}` === key);
+    if (found) { found.useCount += 1; if (row.date > found.lastUsedDate) found.lastUsedDate = row.date; }
+    else result.push({ id: uid(), destination: row.destination, origin, arrival, paidSection: row.paidSection, icFare: row.icFare, reason: row.reason, useCount: 1, lastUsedDate: row.date, sourceName });
+  });
+  return result.sort((a, b) => b.useCount - a.useCount || b.lastUsedDate.localeCompare(a.lastUsedDate));
 }

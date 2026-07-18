@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildDayRoute, copyPages, findFareRule, isPassCovered, outputLines, parseIcsSchedules, parseOcrSchedules, recalculateExpenseLine, suggestExpenseFromDestination, tabSeparated } from "../app/lib/domain";
+import { buildDayRoute, copyPages, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated } from "../app/lib/domain";
 import { EMPTY_STATE, normalizeState, type AppState, type ExpenseLine, type ScheduleItem } from "../app/lib/types";
 
 const expense = (id: string, patch: Partial<ExpenseLine> = {}): ExpenseLine => ({
@@ -106,4 +106,16 @@ test("旧バックアップの確定履歴を運賃台帳へ移行する", () =>
   delete (legacy as Partial<AppState>).fareRules;
   const migrated = normalizeState(legacy);
   assert.equal(migrated.fareRules.length, 1); assert.equal(migrated.fareRules[0].icFare, 178); assert.equal(migrated.fareRules[0].useCount, 2);
+});
+
+test("過去申請書の6列を読み取り、不完全行を除外する", () => {
+  const rows = parseClaimRows([[7, 15, "浦和高校", "池袋→浦和", "406円", "学校訪問"], ["月", "日", "目的地", "区間", "料金", "理由"], [7, 16, "", "池袋→大宮", 483, "訪問"]], 2026);
+  assert.deepEqual(rows, [{ date: "2026-07-15", destination: "浦和高校", paidSection: "池袋→浦和", icFare: 406, reason: "学校訪問" }]);
+});
+
+test("同じ過去実績は利用回数を集約し、別運賃は別候補にする", () => {
+  const rows = parseClaimRows([[7, 15, "浦和高校", "池袋→浦和", 406, "学校訪問"], [7, 20, "浦和高校", "池袋→浦和", 406, "学校訪問"], [8, 1, "浦和高校", "池袋→浦和", 420, "学校訪問"]], 2026);
+  const masters = mergeClaimMasters([], rows, "過去申請.xlsx");
+  assert.equal(masters.length, 2); assert.equal(masters.find((item) => item.icFare === 406)?.useCount, 2); assert.equal(masters[0].sourceName, "過去申請.xlsx");
+  assert.deepEqual(stationsFromSection("池袋 → 浦和"), { origin: "池袋", arrival: "浦和" });
 });

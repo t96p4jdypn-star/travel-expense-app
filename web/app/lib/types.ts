@@ -22,12 +22,18 @@ export type DayRule = { weekday: number; startPlace: string; returnPlace: string
 export type HistoryItem = { id: string; destination: string; origin: string; arrival: string; paidSection: string; reason: string; usedAt: string; count: number; icFare?: number; fareCheckedAt?: string; routeDetails?: string };
 export type FareRule = { id: string; origin: string; arrival: string; paidSection: string; icFare: number; routeDetails: string; registeredAt: string; lastUsedAt: string; useCount: number };
 export type ScheduleCapture = { id: string; month: string; name: string; dataUrl: string; createdAt: string };
+export type ClaimMaster = {
+  id: string; destination: string; origin: string; arrival: string; paidSection: string;
+  icFare: number; reason: string; useCount: number; lastUsedDate: string; sourceName: string;
+};
+export type ClaimImport = { id: string; fileName: string; importedAt: string; rowCount: number; addedCount: number };
 
 export type AppState = {
   version: 1; selectedMonth: string;
   profile: { department: string; employeeName: string; homeName: string; homeStation: string };
   workBases: WorkBase[]; dayRules: DayRule[]; commuterPasses: CommuterPass[];
   places: Place[]; schedules: ScheduleItem[]; expenses: ExpenseLine[]; history: HistoryItem[]; fareRules: FareRule[]; captures: ScheduleCapture[];
+  claimMasters: ClaimMaster[]; claimImports: ClaimImport[];
   lastSavedAt: string;
 };
 
@@ -37,7 +43,7 @@ export const EMPTY_STATE: AppState = {
   profile: { department: "", employeeName: "", homeName: "自宅", homeStation: "" },
   workBases: [],
   dayRules: Array.from({ length: 7 }, (_, weekday) => ({ weekday, startPlace: "自宅", returnPlace: "自宅" })),
-  commuterPasses: [], places: [], schedules: [], expenses: [], history: [], fareRules: [], captures: [], lastSavedAt: new Date().toISOString(),
+  commuterPasses: [], places: [], schedules: [], expenses: [], history: [], fareRules: [], captures: [], claimMasters: [], claimImports: [], lastSavedAt: new Date().toISOString(),
 };
 
 export function normalizeState(value: AppState): AppState {
@@ -52,5 +58,6 @@ export function normalizeState(value: AppState): AppState {
     workBases: value.workBases ?? [], dayRules: value.dayRules?.length ? value.dayRules : EMPTY_STATE.dayRules,
     commuterPasses: value.commuterPasses ?? [], places: value.places ?? [], schedules: value.schedules ?? [],
     expenses: value.expenses ?? [], history: value.history ?? [], fareRules: migratedFareRules, captures: value.captures ?? [],
+    claimMasters: value.claimMasters ?? [], claimImports: value.claimImports ?? [],
   };
 }
