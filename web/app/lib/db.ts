@@ -1,5 +1,5 @@
 import Dexie, { type EntityTable } from "dexie";
-import type { AppState } from "./types";
+import { normalizeState, type AppState } from "./types";
 
 type StoredState = { id: "current"; data: AppState; updatedAt: string };
 
@@ -14,7 +14,8 @@ class TravelExpenseDatabase extends Dexie {
 export const db = new TravelExpenseDatabase();
 
 export async function loadState(): Promise<AppState | null> {
-  return (await db.states.get("current"))?.data ?? null;
+  const data = (await db.states.get("current"))?.data;
+  return data ? normalizeState(data) : null;
 }
 
 export async function saveState(data: AppState): Promise<void> {

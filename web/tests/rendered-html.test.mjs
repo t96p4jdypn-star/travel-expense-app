@@ -34,5 +34,8 @@ test("公開物にPWA定義と端末内OCRモデルを同梱する", async () =>
   assert.match(manifest, /出張旅費申請書作成アプリ/);
   assert.match(page, /TravelExpenseApp/);
   assert.match(app, /IndexedDB|端末内/);
+  assert.match(app, /日付と行き先から自動で作成/);
+  assert.match(app, /スクリーンショットを貼り付け/);
+  assert.match(app, /試験機能：画像・PDFから予定を読み取る/);
   await access(new URL("../public/tessdata/jpn.traineddata.gz", import.meta.url));
 });

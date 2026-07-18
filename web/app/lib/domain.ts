@@ -31,10 +31,32 @@ export function isPassCovered(origin: string, arrival: string, date: string, sta
   });
 }
 
-function placeStation(name: string, state: AppState): string {
+export function resolveStation(name: string, state: AppState): string {
   if (name === state.profile.homeName || name === "自宅") return state.profile.homeStation;
   return state.workBases.find((base) => base.name === name)?.station
     ?? state.places.find((place) => place.name === name)?.nearestStation ?? name;
+}
+
+export function suggestExpenseFromDestination(state: AppState, input: { date: string; startTime: string; destination: string; nearestStation?: string; reason?: string }): Partial<ExpenseLine> {
+  const place = state.places.find((item) => item.name.trim() === input.destination.trim());
+  const destinationHistory = [...state.history].filter((item) => item.destination === input.destination).sort((a, b) => b.count - a.count || b.usedAt.localeCompare(a.usedAt));
+  const sameDay = state.expenses
+    .filter((line) => line.date === input.date && line.state !== "除外")
+    .sort((a, b) => a.startTime.localeCompare(b.startTime) || a.routeOrder - b.routeOrder);
+  const weekday = new Date(`${input.date}T00:00:00`).getDay();
+  const rule = state.dayRules.find((item) => item.weekday === weekday);
+  const origin = sameDay.at(-1)?.arrival || resolveStation(rule?.startPlace || state.profile.homeName || "自宅", state);
+  const arrival = input.nearestStation?.trim() || place?.nearestStation || destinationHistory[0]?.arrival || resolveStation(input.destination, state);
+  const exact = destinationHistory.find((item) => item.origin === origin && item.arrival === arrival);
+  const covered = isPassCovered(origin, arrival, input.date, state);
+  const fare = covered ? 0 : Number(exact?.icFare || 0);
+  return {
+    date: input.date, startTime: input.startTime, destination: input.destination.trim(), origin, arrival,
+    paidSection: `${origin}→${arrival}`, reason: input.reason?.trim() || place?.reason || exact?.reason || destinationHistory[0]?.reason || "",
+    icFare: fare, claimAmount: fare, passCovered: covered, hiddenZero: fare === 0,
+    fareSource: exact?.icFare ? "履歴・要確認" : "手入力", fareCheckedAt: exact?.fareCheckedAt,
+    routeDetails: exact?.routeDetails || place?.route || "", routeOrder: sameDay.length,
+  };
 }
 
 export function buildDayRoute(items: ScheduleItem[], state: AppState, returnOverride = ""): ExpenseLine[] {
@@ -48,8 +70,8 @@ export function buildDayRoute(items: ScheduleItem[], state: AppState, returnOver
   const legs: ExpenseLine[] = [];
   let originName = startName;
   sorted.forEach((item, index) => {
-    const origin = placeStation(originName, state);
-    const arrival = placeStation(item.location || item.title, state);
+    const origin = resolveStation(originName, state);
+    const arrival = resolveStation(item.location || item.title, state);
     const covered = isPassCovered(origin, arrival, item.date, state);
     legs.push({
       id: uid(), date: item.date, startTime: item.startTime, destination: item.location || item.title,
@@ -60,8 +82,8 @@ export function buildDayRoute(items: ScheduleItem[], state: AppState, returnOver
     });
     originName = item.location || item.title;
   });
-  const finalOrigin = placeStation(originName, state);
-  const finalArrival = placeStation(returnName, state);
+  const finalOrigin = resolveStation(originName, state);
+  const finalArrival = resolveStation(returnName, state);
   if (finalOrigin && finalArrival && finalOrigin !== finalArrival) {
     const covered = isPassCovered(finalOrigin, finalArrival, sorted[0].date, state);
     legs.push({

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildDayRoute, copyPages, isPassCovered, outputLines, parseIcsSchedules, parseOcrSchedules, tabSeparated } from "../app/lib/domain";
+import { buildDayRoute, copyPages, isPassCovered, outputLines, parseIcsSchedules, parseOcrSchedules, suggestExpenseFromDestination, tabSeparated } from "../app/lib/domain";
 import { EMPTY_STATE, type AppState, type ExpenseLine, type ScheduleItem } from "../app/lib/types";
+import { POST as farePost } from "../app/api/fare/route";
 
 const expense = (id: string, patch: Partial<ExpenseLine> = {}): ExpenseLine => ({
   id, date: "2026-07-15", startTime: "09:00", destination: "浦和高校", origin: "池袋", arrival: "浦和",
@@ -71,4 +72,34 @@ ChatGPT File Edit View Window Help
 業務
 移動あり`, "2026-07", "画像OCR");
   assert.deepEqual(items, []);
+});
+
+test("既知の行き先は最寄駅・理由・履歴運賃を自動補完する", () => {
+  const value = state(); value.profile.homeStation = "ふじみ野";
+  value.places = [{ id: "p", name: "浦和高校", nearestStation: "浦和", route: "池袋経由", reason: "学校訪問", visitCount: 2, lastUsedAt: "" }];
+  value.history = [{ id: "h", destination: "浦和高校", origin: "ふじみ野", arrival: "浦和", paidSection: "ふじみ野→浦和", reason: "学校訪問", usedAt: "2026-07-01T00:00:00Z", count: 3, icFare: 721, fareCheckedAt: "2026-07-01T00:00:00Z" }];
+  const suggestion = suggestExpenseFromDestination(value, { date: "2026-07-15", startTime: "10:00", destination: "浦和高校" });
+  assert.equal(suggestion.origin, "ふじみ野"); assert.equal(suggestion.arrival, "浦和"); assert.equal(suggestion.reason, "学校訪問"); assert.equal(suggestion.icFare, 721); assert.equal(suggestion.fareSource, "履歴・要確認");
+});
+
+test("同日の2件目は直前行の到着駅から自動的につなぐ", () => {
+  const value = state(); value.profile.homeStation = "ふじみ野"; value.expenses = [expense("first", { arrival: "浦和", startTime: "10:00" })];
+  value.places = [{ id: "p", name: "大宮高校", nearestStation: "大宮", route: "", reason: "学校訪問", visitCount: 0, lastUsedAt: "" }];
+  const suggestion = suggestExpenseFromDestination(value, { date: "2026-07-15", startTime: "13:00", destination: "大宮高校" });
+  assert.equal(suggestion.origin, "浦和"); assert.equal(suggestion.arrival, "大宮"); assert.equal(suggestion.paidSection, "浦和→大宮");
+});
+
+test("運賃APIキー未設定時は秘密情報を要求せず安全に履歴入力へ戻れる", async () => {
+  const previous = process.env.EKISPERT_API_KEY; delete process.env.EKISPERT_API_KEY;
+  const response = await farePost(new Request("http://localhost/api/fare", { method: "POST", body: JSON.stringify({ origin: "池袋", arrival: "浦和" }) }));
+  if (previous) process.env.EKISPERT_API_KEY = previous;
+  assert.equal(response.status, 503); assert.equal((await response.json()).code, "NOT_CONFIGURED");
+});
+
+test("運賃APIは普通運賃ではなくICカード運賃と経路だけを返す", async () => {
+  const previousKey = process.env.EKISPERT_API_KEY; const previousFetch = globalThis.fetch; process.env.EKISPERT_API_KEY = "test-key";
+  globalThis.fetch = async () => new Response(JSON.stringify({ ResultSet: { Course: [{ Price: [{ Type: "Fare", Oneway: "200", selected: "true" }, { Type: "FareICCard", Oneway: "178", selected: "true", RevisionStatus: "latest" }], Route: { Point: [{ Station: { Name: "浦和" } }, { Station: { Name: "大宮" } }], Line: { Name: "ＪＲ京浜東北線" } } }] } }), { status: 200 });
+  const response = await farePost(new Request("http://localhost/api/fare", { method: "POST", body: JSON.stringify({ origin: "浦和", arrival: "大宮", date: "2026-07-15", time: "13:00" }) }));
+  globalThis.fetch = previousFetch; if (previousKey) process.env.EKISPERT_API_KEY = previousKey; else delete process.env.EKISPERT_API_KEY;
+  const result = await response.json(); assert.equal(result.fare, 178); assert.equal(result.paidSection, "浦和→大宮"); assert.equal(result.revisionStatus, "latest");
 });

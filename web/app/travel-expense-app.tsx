@@ -2,9 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { loadState, saveState } from "./lib/db";
-import { buildDayRoute, copyPages, duplicateKeys, isPassCovered, outputLines, parseIcsSchedules, parseOcrSchedules, parseTextSchedules, tabSeparated, uid, yen } from "./lib/domain";
+import { buildDayRoute, copyPages, duplicateKeys, isPassCovered, outputLines, parseIcsSchedules, parseOcrSchedules, parseTextSchedules, suggestExpenseFromDestination, tabSeparated, uid, yen } from "./lib/domain";
 import { createExcel } from "./lib/excel";
-import { EMPTY_STATE, type AppState, type CommuterPass, type ExpenseLine, type ScheduleItem } from "./lib/types";
+import { EMPTY_STATE, normalizeState, type AppState, type CommuterPass, type ExpenseLine, type ScheduleCapture, type ScheduleItem } from "./lib/types";
 
 type Tab = "月間" | "予定取込" | "経路確認" | "コピー出力" | "Excel出力" | "設定";
 const TABS: Tab[] = ["月間", "予定取込", "経路確認", "コピー出力", "Excel出力", "設定"];
@@ -13,6 +13,10 @@ const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 function download(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob); const anchor = document.createElement("a");
   anchor.href = url; anchor.download = filename; anchor.click(); URL.revokeObjectURL(url);
+}
+
+function fileDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = reject; reader.readAsDataURL(file); });
 }
 
 function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
@@ -34,7 +38,7 @@ export function TravelExpenseApp() {
   useEffect(() => { if (!ready) return; const timer = setTimeout(() => saveState({ ...state, lastSavedAt: new Date().toISOString() }), 250); return () => clearTimeout(timer); }, [state, ready]);
 
   const monthExpenses = useMemo(() => state.expenses.filter((line) => line.date.startsWith(state.selectedMonth)), [state]);
-  const visibleExpenses = useMemo(() => monthExpenses.filter((line) => showZero || line.claimAmount > 0), [monthExpenses, showZero]);
+  const visibleExpenses = useMemo(() => monthExpenses.filter((line) => showZero || line.claimAmount > 0 || line.state === "未確認"), [monthExpenses, showZero]);
   const output = useMemo(() => outputLines(state), [state]);
   const total = output.reduce((sum, line) => sum + line.claimAmount, 0);
   const warnings = monthExpenses.filter((line) => line.duplicateWarning).length;
@@ -56,18 +60,37 @@ export function TravelExpenseApp() {
     mutate((draft) => {
       const line = draft.expenses.find((item) => item.id === id); if (!line) return draft;
       Object.assign(line, patch);
+      if (patch.icFare !== undefined && patch.fareSource === undefined) { line.fareSource = "手入力"; line.fareCheckedAt = new Date().toISOString(); }
       line.passCovered = isPassCovered(line.origin, line.arrival, line.date, draft);
       line.claimAmount = line.passCovered ? 0 : Math.max(0, Number(line.icFare || 0));
       line.hiddenZero = line.claimAmount === 0;
       if (patch.state === "確認済み" || patch.state === "修正済み") {
         const existing = draft.history.find((h) => h.destination === line.destination && h.origin === line.origin && h.arrival === line.arrival);
-        if (existing) { existing.count += 1; existing.usedAt = new Date().toISOString(); existing.paidSection = line.paidSection; existing.reason = line.reason; }
-        else draft.history.push({ id: uid(), destination: line.destination, origin: line.origin, arrival: line.arrival, paidSection: line.paidSection, reason: line.reason, usedAt: new Date().toISOString(), count: 1 });
+        if (existing) { existing.count += 1; existing.usedAt = new Date().toISOString(); existing.paidSection = line.paidSection; existing.reason = line.reason; existing.icFare = line.icFare; existing.fareCheckedAt = line.fareCheckedAt || new Date().toISOString(); existing.routeDetails = line.routeDetails; }
+        else draft.history.push({ id: uid(), destination: line.destination, origin: line.origin, arrival: line.arrival, paidSection: line.paidSection, reason: line.reason, usedAt: new Date().toISOString(), count: 1, icFare: line.icFare, fareCheckedAt: line.fareCheckedAt || new Date().toISOString(), routeDetails: line.routeDetails });
+        const place = draft.places.find((item) => item.name === line.destination); if (place) { place.visitCount += 1; place.lastUsedAt = new Date().toISOString(); place.nearestStation ||= line.arrival; place.reason ||= line.reason; place.route ||= line.routeDetails || line.paidSection; }
       }
       return recomputeDuplicates(draft);
     });
   }
   function removeExpense(id: string) { mutate((draft) => ({ ...draft, expenses: draft.expenses.filter((line) => line.id !== id) })); }
+
+  async function quickAdd(input: { date: string; startTime: string; destination: string; nearestStation?: string; reason?: string }) {
+    let line = suggestExpenseFromDestination(state, input);
+    let message = line.fareSource === "履歴・要確認" ? "履歴の運賃を入れました。現在の金額か確認してください。" : "旅費行を追加しました。IC料金を確認してください。";
+    if (!line.passCovered && line.origin && line.arrival) {
+      try {
+        const response = await fetch("/api/fare", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ origin: line.origin, arrival: line.arrival, date: input.date, time: input.startTime }) });
+        if (response.ok) { const fare = await response.json(); line = { ...line, icFare: fare.fare, claimAmount: fare.fare, paidSection: fare.paidSection || line.paidSection, routeDetails: fare.route, fareSource: "自動計算", fareCheckedAt: fare.checkedAt, fareRevisionStatus: fare.revisionStatus, hiddenZero: false }; message = `最新IC運賃 ${yen(fare.fare)} を自動計算しました。内容を確認してください。`; }
+      } catch { /* 履歴または手入力へ安全にフォールバック */ }
+    }
+    mutate((draft) => {
+      if (input.nearestStation && !draft.places.some((item) => item.name === input.destination.trim())) draft.places.push({ id: uid(), name: input.destination.trim(), nearestStation: input.nearestStation.trim(), route: line.routeDetails || "", reason: input.reason?.trim() || "", visitCount: 0, lastUsedAt: "" });
+      const created: ExpenseLine = { id: uid(), date: input.date, startTime: input.startTime, destination: input.destination.trim(), origin: "", arrival: "", paidSection: "", icFare: 0, claimAmount: 0, reason: "", state: "未確認", routeOrder: 0, duplicateWarning: false, passCovered: false, hiddenZero: true, createdAt: new Date().toISOString(), ...line };
+      return recomputeDuplicates({ ...draft, expenses: [...draft.expenses, created] });
+    });
+    setNotice(message);
+  }
 
   function backup() {
     download(new Blob([JSON.stringify(state, null, 2)], { type: "application/json" }), `旅費申請バックアップ_${new Date().toISOString().slice(0, 10)}.json`);
@@ -77,7 +100,7 @@ export function TravelExpenseApp() {
     try {
       const value = JSON.parse(await file.text()) as AppState;
       if (value.version !== 1 || !Array.isArray(value.expenses)) throw new Error();
-      setState(value); setNotice("バックアップを復元しました");
+      setState(normalizeState(value)); setNotice("バックアップを復元しました");
     } catch { setNotice("バックアップを復元できませんでした。ファイルを確認してください。"); }
   }
 
@@ -96,7 +119,7 @@ export function TravelExpenseApp() {
         <div className="header-actions"><button className="secondary" onClick={backup}>バックアップ</button><button className="secondary" onClick={() => importRef.current?.click()}>復元</button><input ref={importRef} hidden type="file" accept="application/json" onChange={(e) => e.target.files?.[0] && restore(e.target.files[0])} /></div>
       </section>
       {notice && <div className="notice" role="status"><span>✓</span>{notice}<button aria-label="通知を閉じる" onClick={() => setNotice("")}>×</button></div>}
-      {tab === "月間" && <MonthlyView lines={visibleExpenses} total={total} warnings={warnings} showZero={showZero} setShowZero={setShowZero} onAdd={addExpense} onUpdate={updateExpense} onRemove={removeExpense} history={state.history} />}
+      {tab === "月間" && <MonthlyView state={state} lines={visibleExpenses} total={total} warnings={warnings} showZero={showZero} setShowZero={setShowZero} onAdd={addExpense} onQuickAdd={quickAdd} onUpdate={updateExpense} onRemove={removeExpense} history={state.history} />}
       {tab === "予定取込" && <ImportView state={state} mutate={mutate} setNotice={setNotice} />}
       {tab === "経路確認" && <RouteView state={state} mutate={mutate} setNotice={setNotice} onUpdate={updateExpense} />}
       {tab === "コピー出力" && <CopyView lines={output} total={total} setNotice={setNotice} onSubmitted={() => markSubmitted(output)} />}
@@ -113,9 +136,10 @@ export function TravelExpenseApp() {
   }
 }
 
-function MonthlyView({ lines, total, warnings, showZero, setShowZero, onAdd, onUpdate, onRemove, history }: any) {
+function MonthlyView({ state, lines, total, warnings, showZero, setShowZero, onAdd, onQuickAdd, onUpdate, onRemove, history }: any) {
   const suggestions = [...history].sort((a: any, b: any) => b.count - a.count).slice(0, 5);
   return <section className="panel"><div className="panel-heading"><div><span className="eyebrow">旅費明細</span><h2>今月の移動</h2><p>0円区間は経路として保存され、通常一覧と出力から隠れます。</p></div><div className="heading-actions"><label className="switch"><input type="checkbox" checked={showZero} onChange={(e) => setShowZero(e.target.checked)} /><span />0円経路も表示</label><button className="primary" onClick={() => onAdd()}>＋ 旅費行を追加</button></div></div>
+    <QuickAdd state={state} onAdd={onQuickAdd} />
     {warnings > 0 && <div className="warning">同じ日・区間・金額の重複候補が {warnings} 件あります。確認済みにする前に修正してください。</div>}
     {suggestions.length > 0 && <div className="suggestions"><b>よく使う確定経路</b>{suggestions.map((h: any) => <button key={h.id} onClick={() => onAdd({ destination: h.destination, origin: h.origin, arrival: h.arrival, paidSection: h.paidSection, reason: h.reason })}>{h.destination} · {h.paidSection}</button>)}</div>}
     <div className="expense-list">{lines.length ? lines.map((line: ExpenseLine) => <ExpenseCard key={line.id} line={line} onUpdate={onUpdate} onRemove={onRemove} />) : <Empty title="出力できる旅費行はまだありません" body="予定を取り込んで1日経路を作るか、旅費行を手入力してください。" />}</div>
@@ -123,17 +147,47 @@ function MonthlyView({ lines, total, warnings, showZero, setShowZero, onAdd, onU
   </section>;
 }
 
+function QuickAdd({ state, onAdd }: { state: AppState; onAdd: (input: { date: string; startTime: string; destination: string; nearestStation?: string; reason?: string }) => Promise<void> }) {
+  const today = new Date().toISOString().slice(0, 10); const initialDate = today.startsWith(state.selectedMonth) ? today : `${state.selectedMonth}-01`;
+  const [date, setDate] = useState(initialDate); const [startTime, setStartTime] = useState("09:00"); const [destination, setDestination] = useState("");
+  const [nearestStation, setNearestStation] = useState(""); const [reason, setReason] = useState(""); const [busy, setBusy] = useState(false);
+  useEffect(() => { const current = new Date().toISOString().slice(0, 10); setDate(current.startsWith(state.selectedMonth) ? current : `${state.selectedMonth}-01`); }, [state.selectedMonth]);
+  const names = [...new Set([...state.places.map((item) => item.name), ...state.history.map((item) => item.destination)])];
+  const ranked = names.map((name) => ({ name, score: (state.places.find((item) => item.name === name)?.visitCount || 0) + (state.history.filter((item) => item.destination === name).reduce((sum, item) => sum + item.count, 0) * 2), recent: state.history.filter((item) => item.destination === name).sort((a, b) => b.usedAt.localeCompare(a.usedAt))[0]?.usedAt || "" })).sort((a, b) => b.recent.localeCompare(a.recent) || b.score - a.score);
+  function select(name: string) {
+    setDestination(name); const place = state.places.find((item) => item.name === name); const history = [...state.history].filter((item) => item.destination === name).sort((a, b) => b.count - a.count || b.usedAt.localeCompare(a.usedAt))[0];
+    setNearestStation(place?.nearestStation || history?.arrival || ""); setReason(place?.reason || history?.reason || "");
+  }
+  async function submit() {
+    if (!date || !destination.trim()) return; setBusy(true); await onAdd({ date, startTime, destination, nearestStation, reason }); setBusy(false); setDestination(""); setNearestStation(""); setReason("");
+  }
+  return <div className="quick-add"><div className="quick-add-title"><div><span className="eyebrow">最短入力</span><h3>日付と行き先から自動で作成</h3></div><span className="auto-hint">出発駅・経路・IC料金を自動補完</span></div>
+    {ranked.length > 0 && <div className="destination-chips"><span>最近・よく使う</span>{ranked.slice(0, 6).map((item) => <button key={item.name} onClick={() => select(item.name)}>{item.name}</button>)}</div>}
+    <div className="quick-add-grid"><Field label="日付"><input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></Field><Field label="時刻"><input type="time" value={startTime} onChange={(event) => setStartTime(event.target.value)} /></Field><Field label="行き先"><input list="quick-destinations" placeholder="例：浦和高校" value={destination} onChange={(event) => select(event.target.value)} /><datalist id="quick-destinations">{ranked.map((item) => <option key={item.name} value={item.name} />)}</datalist></Field><Field label="最寄駅" hint="初回だけ。次回から自動"><input placeholder="例：浦和" value={nearestStation} onChange={(event) => setNearestStation(event.target.value)} /></Field><Field label="移動理由" hint="初回だけ。次回から自動"><input placeholder="例：学校訪問" value={reason} onChange={(event) => setReason(event.target.value)} /></Field><button className="primary quick-submit" disabled={busy || !destination.trim()} onClick={submit}>{busy ? "計算中…" : "追加して自動計算"}</button></div>
+  </div>;
+}
+
 function ExpenseCard({ line, onUpdate, onRemove }: { line: ExpenseLine; onUpdate: (id: string, patch: Partial<ExpenseLine>) => void; onRemove: (id: string) => void }) {
   return <article className={`expense-card ${line.duplicateWarning ? "duplicate" : ""}`}>
     <div className="expense-date"><input aria-label="移動日" type="date" value={line.date} onChange={(e) => onUpdate(line.id, { date: e.target.value })} /><input aria-label="開始時刻" type="time" value={line.startTime} onChange={(e) => onUpdate(line.id, { startTime: e.target.value })} /></div>
     <div className="expense-main"><input aria-label="目的地" placeholder="目的地" value={line.destination} onChange={(e) => onUpdate(line.id, { destination: e.target.value, state: line.state === "確認済み" ? "修正済み" : line.state })} /><div className="route-inputs"><input aria-label="出発駅" placeholder="出発駅" value={line.origin} onChange={(e) => onUpdate(line.id, { origin: e.target.value, paidSection: `${e.target.value}→${line.arrival}` })} /><span>→</span><input aria-label="到着駅" placeholder="到着駅" value={line.arrival} onChange={(e) => onUpdate(line.id, { arrival: e.target.value, paidSection: `${line.origin}→${e.target.value}` })} /></div><input aria-label="有料区間" placeholder="有料区間" value={line.paidSection} onChange={(e) => onUpdate(line.id, { paidSection: e.target.value })} /></div>
     <div className="expense-meta"><Field label="IC料金"><div className="money-input"><span>¥</span><input aria-label="IC料金" inputMode="numeric" value={line.icFare || ""} onChange={(e) => onUpdate(line.id, { icFare: Number(e.target.value) })} /></div></Field><Field label="移動理由"><input aria-label="移動理由" placeholder="学校訪問" value={line.reason} onChange={(e) => onUpdate(line.id, { reason: e.target.value })} /></Field></div>
-    <div className="expense-actions"><StatusBadge value={line.state} />{line.passCovered && <span className="pass-badge">定期券内 0円</span>}{line.duplicateWarning && <span className="duplicate-badge">重複候補</span>}<select aria-label="確認状態" value={line.state} onChange={(e) => onUpdate(line.id, { state: e.target.value as ExpenseLine["state"] })}>{["未確認", "確認済み", "修正済み", "保留", "除外", "申請済み"].map((s) => <option key={s}>{s}</option>)}</select><button className="icon-button" aria-label="旅費行を削除" onClick={() => onRemove(line.id)}>削除</button></div>
+    <div className="expense-actions"><StatusBadge value={line.state} />{line.fareSource && <span className={`fare-source fare-${line.fareSource}`}>{line.fareSource}{line.fareCheckedAt ? ` ${new Date(line.fareCheckedAt).toLocaleDateString("ja-JP")}` : ""}</span>}{line.passCovered && <span className="pass-badge">定期券内 0円</span>}{line.duplicateWarning && <span className="duplicate-badge">重複候補</span>}<select aria-label="確認状態" value={line.state} onChange={(e) => onUpdate(line.id, { state: e.target.value as ExpenseLine["state"] })}>{["未確認", "確認済み", "修正済み", "保留", "除外", "申請済み"].map((s) => <option key={s}>{s}</option>)}</select><button className="icon-button" aria-label="旅費行を削除" onClick={() => onRemove(line.id)}>削除</button></div>
   </article>;
 }
 
 function ImportView({ state, mutate, setNotice }: any) {
   const [text, setText] = useState(""); const [processing, setProcessing] = useState(""); const [ocrText, setOcrText] = useState("");
+  const monthCaptures = (state.captures || []).filter((item: ScheduleCapture) => item.month === state.selectedMonth);
+  async function saveCaptures(files: File[]) {
+    const images = files.filter((file) => file.type.startsWith("image/")); if (!images.length) return;
+    const captures: ScheduleCapture[] = await Promise.all(images.map(async (file) => ({ id: uid(), month: state.selectedMonth, name: file.name || "貼り付け画像", dataUrl: await fileDataUrl(file), createdAt: new Date().toISOString() })));
+    mutate((draft: AppState) => ({ ...draft, captures: [...(draft.captures || []), ...captures] })); setNotice(`${captures.length}枚のスクリーンショットを端末内に保存しました`);
+  }
+  function pasteCapture(event: React.ClipboardEvent<HTMLDivElement>) {
+    const images = Array.from(event.clipboardData.items).filter((item) => item.type.startsWith("image/")).map((item) => item.getAsFile()).filter((file): file is File => Boolean(file));
+    if (images.length) { event.preventDefault(); void saveCaptures(images); }
+  }
   const addParsed = (items: ScheduleItem[]) => {
     if (!items.length) { setNotice("日付・時刻を含む予定を検出できませんでした。予定部分だけが見える画像を使うか、手入力してください。"); return; }
     mutate((d: AppState) => ({ ...d, schedules: [...d.schedules, ...items] })); setNotice(`${items.length}件を候補として取り込みました。内容を確認してください。`);
@@ -174,8 +228,10 @@ function ImportView({ state, mutate, setNotice }: any) {
     setProcessing("");
   }
   function update(id: string, patch: Partial<ScheduleItem>) { mutate((d: AppState) => { Object.assign(d.schedules.find((x) => x.id === id)!, patch); return d; }); }
-  return <section className="panel"><div className="panel-heading"><div><span className="eyebrow">端末内で読み取り</span><h2>予定を取り込む</h2><p>スクリーンショットやPDFは外部AIへ送信せず、このブラウザ内で解析します。</p></div></div>
-    <div className="import-grid"><label className="dropzone"><input type="file" multiple accept="image/*,.pdf,.csv,.txt,.ics" onChange={(e) => files(e.target.files)} /><b>画像・PDF・CSVを選択</b><span>複数画像・iPhoneカレンダー書き出しにも対応</span></label><div className="paste-box"><textarea aria-label="予定テキスト" placeholder={'例：7/15\t10:00-11:00\t学校訪問\t浦和高校'} value={text} onChange={(e) => setText(e.target.value)} /><div className="button-row"><button className="secondary" onClick={() => addParsed([{ id: uid(), date: `${state.selectedMonth}-01`, startTime: "09:00", endTime: "10:00", title: "", location: "", isBusiness: true, hasTravel: true, confirmed: false, source: "手入力" }])}>手入力で予定を追加</button><button className="primary" onClick={() => { addParsed(parseTextSchedules(text, state.selectedMonth, text.includes(",") ? "CSV" : "テキスト")); setText(""); }}>テキストから候補作成</button></div></div></div>
+  return <section className="panel"><div className="panel-heading"><div><span className="eyebrow">参考画像を端末内に保存</span><h2>予定スクリーンショット</h2><p>画像は読み取りに頼らず、確認用として貼り付け保存できます。外部AIには送信しません。</p></div></div>
+    <div className="capture-paste" tabIndex={0} onPaste={pasteCapture}><div><b>ここを選んでスクリーンショットを貼り付け</b><span>Macは ⌘V、Windowsは Ctrl+V</span></div><label className="secondary capture-file">画像を選択<input hidden type="file" multiple accept="image/*" onChange={(event) => void saveCaptures(Array.from(event.target.files || []))} /></label></div>
+    {monthCaptures.length > 0 && <div className="capture-grid">{monthCaptures.map((capture: ScheduleCapture) => <article key={capture.id}><a href={capture.dataUrl} target="_blank" rel="noreferrer"><img src={capture.dataUrl} alt={capture.name} /></a><div><span>{new Date(capture.createdAt).toLocaleString("ja-JP")}</span><button className="icon-button" onClick={() => mutate((draft: AppState) => ({ ...draft, captures: draft.captures.filter((item) => item.id !== capture.id) }))}>削除</button></div></article>)}</div>}
+    <details className="ocr-lab"><summary><b>試験機能：画像・PDFから予定を読み取る</b><span>精度にばらつきがあるため補助機能として利用</span></summary><div className="import-grid"><label className="dropzone"><input type="file" multiple accept="image/*,.pdf,.csv,.txt,.ics" onChange={(e) => files(e.target.files)} /><b>画像・PDF・CSVを選択</b><span>OCR結果は自動確定しません</span></label><div className="paste-box"><textarea aria-label="予定テキスト" placeholder={'例：7/15\t10:00-11:00\t学校訪問\t浦和高校'} value={text} onChange={(e) => setText(e.target.value)} /><div className="button-row"><button className="secondary" onClick={() => addParsed([{ id: uid(), date: `${state.selectedMonth}-01`, startTime: "09:00", endTime: "10:00", title: "", location: "", isBusiness: true, hasTravel: true, confirmed: false, source: "手入力" }])}>手入力で予定を追加</button><button className="primary" onClick={() => { addParsed(parseTextSchedules(text, state.selectedMonth, text.includes(",") ? "CSV" : "テキスト")); setText(""); }}>テキストから候補作成</button></div></div></div></details>
     {processing && <div className="processing">{processing}</div>}{ocrText && <details className="ocr-raw"><summary>読み取った文字を確認</summary><pre>{ocrText}</pre></details>}
     <div className="section-title-row"><div><h3>OCR・取込結果の確認</h3><p className="section-note">自動確定はしません。日付・時刻・予定名・場所・業務区分・移動有無を確認してください。</p></div><button className="secondary" onClick={() => { mutate((d: AppState) => ({ ...d, schedules: d.schedules.filter((item) => item.confirmed || !item.date.startsWith(d.selectedMonth)) })); setNotice("今月の未確認候補を削除しました"); }}>今月の未確認候補をすべて削除</button></div>
     <div className="schedule-table"><div className="schedule-head"><span>日時</span><span>予定名・場所</span><span>区分</span><span>確認</span></div>{state.schedules.filter((s: ScheduleItem) => s.date.startsWith(state.selectedMonth)).map((item: ScheduleItem) => <div className="schedule-row" key={item.id}><div><input type="date" value={item.date} onChange={(e) => update(item.id, { date: e.target.value })} /><div className="inline"><input type="time" value={item.startTime} onChange={(e) => update(item.id, { startTime: e.target.value })} /><span>–</span><input type="time" value={item.endTime} onChange={(e) => update(item.id, { endTime: e.target.value })} /></div></div><div><input placeholder="予定名" value={item.title} onChange={(e) => update(item.id, { title: e.target.value })} /><input placeholder="場所" value={item.location} onChange={(e) => update(item.id, { location: e.target.value })} /></div><div><label><input type="checkbox" checked={item.isBusiness} onChange={(e) => update(item.id, { isBusiness: e.target.checked })} />業務</label><label><input type="checkbox" checked={item.hasTravel} onChange={(e) => update(item.id, { hasTravel: e.target.checked })} />移動あり</label></div><div><button className={item.confirmed ? "confirmed" : "secondary"} onClick={() => update(item.id, { confirmed: !item.confirmed })}>{item.confirmed ? "確認済み" : "確認する"}</button><button className="icon-button" onClick={() => mutate((d: AppState) => ({ ...d, schedules: d.schedules.filter((candidate) => candidate.id !== item.id) }))}>削除</button><small>{item.source}</small></div></div>)}</div>
