@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildDayRoute, copyPages, isPassCovered, outputLines, parseIcsSchedules, parseOcrSchedules, suggestExpenseFromDestination, tabSeparated } from "../app/lib/domain";
-import { EMPTY_STATE, type AppState, type ExpenseLine, type ScheduleItem } from "../app/lib/types";
-import { POST as farePost } from "../app/api/fare/route";
+import { buildDayRoute, copyPages, findFareRule, isPassCovered, outputLines, parseIcsSchedules, parseOcrSchedules, recalculateExpenseLine, suggestExpenseFromDestination, tabSeparated } from "../app/lib/domain";
+import { EMPTY_STATE, normalizeState, type AppState, type ExpenseLine, type ScheduleItem } from "../app/lib/types";
 
 const expense = (id: string, patch: Partial<ExpenseLine> = {}): ExpenseLine => ({
   id, date: "2026-07-15", startTime: "09:00", destination: "浦和高校", origin: "池袋", arrival: "浦和",
@@ -89,17 +88,22 @@ test("同日の2件目は直前行の到着駅から自動的につなぐ", () =
   assert.equal(suggestion.origin, "浦和"); assert.equal(suggestion.arrival, "大宮"); assert.equal(suggestion.paidSection, "浦和→大宮");
 });
 
-test("運賃APIキー未設定時は秘密情報を要求せず安全に履歴入力へ戻れる", async () => {
-  const previous = process.env.EKISPERT_API_KEY; delete process.env.EKISPERT_API_KEY;
-  const response = await farePost(new Request("http://localhost/api/fare", { method: "POST", body: JSON.stringify({ origin: "池袋", arrival: "浦和" }) }));
-  if (previous) process.env.EKISPERT_API_KEY = previous;
-  assert.equal(response.status, 503); assert.equal((await response.json()).code, "NOT_CONFIGURED");
+test("確定済みの区間はブラウザ内の運賃台帳から自動計算する", () => {
+  const value = state(); value.fareRules = [{ id: "f", origin: "浦和駅", arrival: "大宮", paidSection: "浦和→大宮", icFare: 178, routeDetails: "JR", registeredAt: "2026-07-01T00:00:00Z", lastUsedAt: "2026-07-01T00:00:00Z", useCount: 3 }];
+  const calculated = recalculateExpenseLine(expense("x", { origin: "浦和", arrival: "大宮", paidSection: "", icFare: 0, claimAmount: 0, state: "未確認" }), value);
+  assert.equal(calculated.icFare, 178); assert.equal(calculated.claimAmount, 178); assert.equal(calculated.fareSource, "登録運賃");
 });
 
-test("運賃APIは普通運賃ではなくICカード運賃と経路だけを返す", async () => {
-  const previousKey = process.env.EKISPERT_API_KEY; const previousFetch = globalThis.fetch; process.env.EKISPERT_API_KEY = "test-key";
-  globalThis.fetch = async () => new Response(JSON.stringify({ ResultSet: { Course: [{ Price: [{ Type: "Fare", Oneway: "200", selected: "true" }, { Type: "FareICCard", Oneway: "178", selected: "true", RevisionStatus: "latest" }], Route: { Point: [{ Station: { Name: "浦和" } }, { Station: { Name: "大宮" } }], Line: { Name: "ＪＲ京浜東北線" } } }] } }), { status: 200 });
-  const response = await farePost(new Request("http://localhost/api/fare", { method: "POST", body: JSON.stringify({ origin: "浦和", arrival: "大宮", date: "2026-07-15", time: "13:00" }) }));
-  globalThis.fetch = previousFetch; if (previousKey) process.env.EKISPERT_API_KEY = previousKey; else delete process.env.EKISPERT_API_KEY;
-  const result = await response.json(); assert.equal(result.fare, 178); assert.equal(result.paidSection, "浦和→大宮"); assert.equal(result.revisionStatus, "latest");
+test("登録運賃は逆方向でも使えるが表示区間は移動方向になる", () => {
+  const value = state(); value.fareRules = [{ id: "f", origin: "浦和", arrival: "大宮", paidSection: "浦和→大宮", icFare: 178, routeDetails: "JR", registeredAt: "2026-07-01T00:00:00Z", lastUsedAt: "2026-07-01T00:00:00Z", useCount: 1 }];
+  assert.equal(findFareRule(value, "大宮", "浦和")?.reversed, true);
+  const calculated = recalculateExpenseLine(expense("x", { origin: "大宮", arrival: "浦和", icFare: 0 }), value);
+  assert.equal(calculated.paidSection, "大宮→浦和"); assert.equal(calculated.icFare, 178);
+});
+
+test("旧バックアップの確定履歴を運賃台帳へ移行する", () => {
+  const legacy = state(); legacy.history = [{ id: "h", destination: "大宮高校", origin: "浦和", arrival: "大宮", paidSection: "浦和→大宮", reason: "学校訪問", usedAt: "2026-07-01T00:00:00Z", count: 2, icFare: 178 }];
+  delete (legacy as Partial<AppState>).fareRules;
+  const migrated = normalizeState(legacy);
+  assert.equal(migrated.fareRules.length, 1); assert.equal(migrated.fareRules[0].icFare, 178); assert.equal(migrated.fareRules[0].useCount, 2);
 });

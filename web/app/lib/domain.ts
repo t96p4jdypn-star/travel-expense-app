@@ -1,4 +1,4 @@
-import type { AppState, ExpenseLine, ScheduleItem } from "./types";
+import type { AppState, ExpenseLine, FareRule, ScheduleItem } from "./types";
 
 export const uid = () => crypto.randomUUID();
 export const monthOf = (date: string) => date.slice(0, 7);
@@ -37,6 +37,28 @@ export function resolveStation(name: string, state: AppState): string {
     ?? state.places.find((place) => place.name === name)?.nearestStation ?? name;
 }
 
+const stationKey = (value: string) => value.trim().replace(/[\s　]/g, "").replace(/駅$/, "");
+
+export function findFareRule(state: AppState, origin: string, arrival: string): { rule: FareRule; reversed: boolean } | undefined {
+  const from = stationKey(origin); const to = stationKey(arrival);
+  const exact = state.fareRules.find((rule) => stationKey(rule.origin) === from && stationKey(rule.arrival) === to);
+  if (exact) return { rule: exact, reversed: false };
+  const reverse = state.fareRules.find((rule) => stationKey(rule.origin) === to && stationKey(rule.arrival) === from);
+  return reverse ? { rule: reverse, reversed: true } : undefined;
+}
+
+export function recalculateExpenseLine(line: ExpenseLine, state: AppState): ExpenseLine {
+  const passCovered = isPassCovered(line.origin, line.arrival, line.date, state);
+  const found = findFareRule(state, line.origin, line.arrival);
+  if (passCovered) return { ...line, paidSection: line.paidSection || `${line.origin}→${line.arrival}`, icFare: 0, claimAmount: 0, passCovered: true, hiddenZero: true, fareSource: "登録運賃" };
+  if (!found) {
+    const fare = Math.max(0, Number(line.icFare || 0));
+    return { ...line, paidSection: line.paidSection || `${line.origin}→${line.arrival}`, icFare: fare, claimAmount: fare, passCovered: false, hiddenZero: fare === 0, fareSource: "手入力" };
+  }
+  const { rule, reversed } = found;
+  return { ...line, paidSection: reversed ? `${line.origin}→${line.arrival}` : rule.paidSection, icFare: rule.icFare, claimAmount: rule.icFare, routeDetails: rule.routeDetails || line.routeDetails, passCovered: false, hiddenZero: false, fareSource: "登録運賃", fareCheckedAt: rule.registeredAt };
+}
+
 export function suggestExpenseFromDestination(state: AppState, input: { date: string; startTime: string; destination: string; nearestStation?: string; reason?: string }): Partial<ExpenseLine> {
   const place = state.places.find((item) => item.name.trim() === input.destination.trim());
   const destinationHistory = [...state.history].filter((item) => item.destination === input.destination).sort((a, b) => b.count - a.count || b.usedAt.localeCompare(a.usedAt));
@@ -48,14 +70,15 @@ export function suggestExpenseFromDestination(state: AppState, input: { date: st
   const origin = sameDay.at(-1)?.arrival || resolveStation(rule?.startPlace || state.profile.homeName || "自宅", state);
   const arrival = input.nearestStation?.trim() || place?.nearestStation || destinationHistory[0]?.arrival || resolveStation(input.destination, state);
   const exact = destinationHistory.find((item) => item.origin === origin && item.arrival === arrival);
+  const registered = findFareRule(state, origin, arrival);
   const covered = isPassCovered(origin, arrival, input.date, state);
-  const fare = covered ? 0 : Number(exact?.icFare || 0);
+  const fare = covered ? 0 : Number(registered?.rule.icFare || exact?.icFare || 0);
   return {
     date: input.date, startTime: input.startTime, destination: input.destination.trim(), origin, arrival,
     paidSection: `${origin}→${arrival}`, reason: input.reason?.trim() || place?.reason || exact?.reason || destinationHistory[0]?.reason || "",
     icFare: fare, claimAmount: fare, passCovered: covered, hiddenZero: fare === 0,
-    fareSource: exact?.icFare ? "履歴・要確認" : "手入力", fareCheckedAt: exact?.fareCheckedAt,
-    routeDetails: exact?.routeDetails || place?.route || "", routeOrder: sameDay.length,
+    fareSource: registered ? "登録運賃" : exact?.icFare ? "履歴・要確認" : "手入力", fareCheckedAt: registered?.rule.registeredAt || exact?.fareCheckedAt,
+    routeDetails: registered?.rule.routeDetails || exact?.routeDetails || place?.route || "", routeOrder: sameDay.length,
   };
 }
 
