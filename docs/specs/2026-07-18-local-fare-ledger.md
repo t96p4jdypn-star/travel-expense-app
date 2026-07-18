@@ -66,4 +66,9 @@
 
 ## 実装結果
 
-未実装。
+- 2026-07-18に実装完了。
+- GitHub commit: `ecc110d`
+- Sites公開版: version 4（source commit `e57981c`）
+- 機能テスト12件、公開物テスト2件、型チェック、公開用ビルドに成功。
+- 公開URL `https://travel-expense-jp.koji680424.chatgpt.site/` のHTTP 200を確認。
+- 全国の未登録区間について最新IC運賃を外部データなしで算出する機能ではない。初回または運賃改定時は利用者がIC料金を確認し、確定登録する。
