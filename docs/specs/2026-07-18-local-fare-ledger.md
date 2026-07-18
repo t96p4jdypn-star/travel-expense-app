@@ -72,3 +72,4 @@
 - 機能テスト12件、公開物テスト2件、型チェック、公開用ビルドに成功。
 - 公開URL `https://travel-expense-jp.koji680424.chatgpt.site/` のHTTP 200を確認。
 - 全国の未登録区間について最新IC運賃を外部データなしで算出する機能ではない。初回または運賃改定時は利用者がIC料金を確認し、確定登録する。
+- 2026-07-18追補：最短入力欄にIC料金の自動表示・直接入力を追加。GitHub commit `8b84431`、Sites version 5（source commit `8cc6c23`）として公開。
