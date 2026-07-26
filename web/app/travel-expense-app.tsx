@@ -8,7 +8,10 @@ import { createOdsFromTemplate, parseOdsTableRows } from "./lib/ods";
 import { EMPTY_STATE, normalizeState, safeAmount, type AppState, type ClaimMaster, type CommuterPass, type ExpenseLine, type ScheduleCapture, type ScheduleItem } from "./lib/types";
 
 type Tab = "入力" | "実績マスター" | "ODS出力" | "実績から作成" | "過去データ読込" | "月間" | "予定取込" | "経路確認" | "登録状況" | "コピー出力" | "Excel出力" | "設定";
-const TABS: Tab[] = ["入力", "過去データ読込", "実績マスター", "ODS出力", "設定"];
+type MainTab = "旅費入力" | "設定";
+type SettingsSection = "基本情報" | "過去データ取込" | "実績マスター管理" | "データ管理";
+const MAIN_TABS: MainTab[] = ["旅費入力", "設定"];
+const SETTINGS_SECTIONS: SettingsSection[] = ["基本情報", "過去データ取込", "実績マスター管理", "データ管理"];
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 
 function download(blob: Blob, filename: string) {
@@ -29,11 +32,10 @@ function StatusBadge({ value }: { value: string }) { return <span className={`st
 export function TravelExpenseApp() {
   const [state, setState] = useState<AppState>(EMPTY_STATE);
   const [ready, setReady] = useState(false);
-  const [tab, setTab] = useState<Tab>("入力");
+  const [mainTab, setMainTab] = useState<MainTab>("旅費入力");
   const [showZero, setShowZero] = useState(false);
   const [notice, setNotice] = useState("データはこの端末内だけに保存されます");
   const [submissionDate, setSubmissionDate] = useState(new Date().toISOString().slice(0, 10));
-  const importRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { loadState().then((saved) => { if (saved) setState(saved); setReady(true); }); }, []);
   useEffect(() => { if (!ready) return; const timer = setTimeout(() => saveState({ ...state, lastSavedAt: new Date().toISOString() }), 250); return () => clearTimeout(timer); }, [state, ready]);
@@ -136,29 +138,21 @@ export function TravelExpenseApp() {
 
   return <div className="app-shell">
     <header className="topbar">
-      <div className="brand"><span className="brand-mark">旅</span><div><h1>出張旅費申請書作成アプリ</h1><p>1日の移動をつなげて、申請できる区間だけを整理</p></div></div>
+      <div className="brand"><span className="brand-mark">旅</span><div><h1>出張旅費申請書作成アプリ</h1><p>毎月の旅費をすばやく入力し、ODS申請書を作成</p></div></div>
       <div className="privacy-pill"><span className="privacy-dot" />外部AIへ送信しません</div>
     </header>
-    <nav className="tabs" aria-label="主な機能">{TABS.map((name) => <button key={name} className={tab === name ? "active" : ""} onClick={() => setTab(name)}>{name}</button>)}</nav>
+    <nav className="tabs" aria-label="主な機能">{MAIN_TABS.map((name) => <button key={name} className={mainTab === name ? "active" : ""} onClick={() => setMainTab(name)}>{name}</button>)}</nav>
     <main>
-      <section className="month-strip">
+      {mainTab === "旅費入力" && <section className="month-strip">
         <div><span className="eyebrow">対象月</span><input aria-label="対象月" type="month" value={state.selectedMonth} onChange={(e) => mutate((d) => ({ ...d, selectedMonth: e.target.value }))} /></div>
-        <div className="month-metrics"><div><strong>{monthExpenses.length}</strong><span>内部経路</span></div><div><strong>{output.length}</strong><span>出力明細</span></div><div><strong>{yen(total)}</strong><span>申請合計</span></div></div>
-        <div className="header-actions"><button className="secondary" onClick={backup}>バックアップ</button><button className="secondary" onClick={() => importRef.current?.click()}>復元</button><input ref={importRef} hidden type="file" accept="application/json" onChange={(e) => e.target.files?.[0] && restore(e.target.files[0])} /></div>
-      </section>
+        <div className="month-metrics"><div><strong>{monthExpenses.filter((line) => line.destination).length}</strong><span>入力件数</span></div><div><strong>{output.length}</strong><span>出力明細</span></div><div><strong>{yen(total)}</strong><span>申請合計</span></div></div>
+      </section>}
       {notice && <div className="notice" role="status"><span>✓</span>{notice}<button aria-label="通知を閉じる" onClick={() => setNotice("")}>×</button></div>}
-      {tab === "入力" && <TableEntryView state={state} mutate={mutate} setNotice={setNotice} />}
-      {tab === "実績マスター" && <ClaimMasterView state={state} mutate={mutate} setNotice={setNotice} />}
-      {tab === "ODS出力" && <OdsView state={state} lines={output} total={total} setNotice={setNotice} />}
-      {tab === "実績から作成" && <MasterEntryView state={state} mutate={mutate} setNotice={setNotice} setTab={setTab} />}
-      {tab === "過去データ読込" && <PastClaimsImportView state={state} mutate={mutate} setNotice={setNotice} />}
-      {tab === "月間" && <MonthlyView state={state} lines={visibleExpenses} total={total} warnings={warnings} showZero={showZero} setShowZero={setShowZero} onAdd={addExpense} onQuickAdd={quickAdd} onUpdate={updateExpense} onRecalculate={recalculateExpense} onConfirm={confirmExpense} onRemove={removeExpense} history={state.history} />}
-      {tab === "予定取込" && <ImportView state={state} mutate={mutate} setNotice={setNotice} />}
-      {tab === "経路確認" && <RouteView state={state} mutate={mutate} setNotice={setNotice} onUpdate={updateExpense} />}
-      {tab === "登録状況" && <RegistrationView state={state} lines={monthExpenses} output={output} total={total} mutate={mutate} setTab={setTab} />}
-      {tab === "コピー出力" && <CopyView lines={output} total={total} setNotice={setNotice} onSubmitted={() => markSubmitted(output)} />}
-      {tab === "Excel出力" && <ExcelView state={state} lines={output} total={total} submissionDate={submissionDate} setSubmissionDate={setSubmissionDate} setNotice={setNotice} onSubmitted={() => markSubmitted(output)} />}
-      {tab === "設定" && <SettingsView state={state} mutate={mutate} setNotice={setNotice} />}
+      {mainTab === "旅費入力" && <div className="travel-workflow">
+        <TableEntryView state={state} mutate={mutate} setNotice={setNotice} />
+        <OdsView state={state} lines={output} total={total} setNotice={setNotice} />
+      </div>}
+      {mainTab === "設定" && <Ver3SettingsView state={state} mutate={mutate} setNotice={setNotice} onBackup={backup} onRestore={restore} />}
     </main>
     <footer><span>保存先：このブラウザ内（IndexedDB）</span><span>最終保存：{new Date(state.lastSavedAt).toLocaleString("ja-JP")}</span></footer>
   </div>;
@@ -178,6 +172,76 @@ function emptyExpense(month: string, day = "01"): ExpenseLine {
     paidSection: "", icFare: 0, claimAmount: 0, reason: "", state: "未確認", routeOrder: 0,
     duplicateWarning: false, passCovered: false, hiddenZero: true, createdAt: new Date().toISOString(),
   };
+}
+
+function Ver3SettingsView({ state, mutate, setNotice, onBackup, onRestore }: {
+  state: AppState;
+  mutate: (updater: (draft: AppState) => AppState) => void;
+  setNotice: (value: string) => void;
+  onBackup: () => void;
+  onRestore: (file: File) => Promise<void>;
+}) {
+  const [section, setSection] = useState<SettingsSection>("基本情報");
+  return <div className="settings-workspace">
+    <nav className="settings-sections" aria-label="設定メニュー">
+      {SETTINGS_SECTIONS.map((name) => <button key={name} className={section === name ? "active" : ""} onClick={() => setSection(name)}>{name}</button>)}
+    </nav>
+    {section === "基本情報" && <BasicInfoView state={state} mutate={mutate} setNotice={setNotice} />}
+    {section === "過去データ取込" && <PastClaimsImportView state={state} mutate={mutate} setNotice={setNotice} />}
+    {section === "実績マスター管理" && <ClaimMasterView state={state} mutate={mutate} setNotice={setNotice} />}
+    {section === "データ管理" && <DataManagementView onBackup={onBackup} onRestore={onRestore} />}
+  </div>;
+}
+
+function BasicInfoView({ state, mutate, setNotice }: {
+  state: AppState;
+  mutate: (updater: (draft: AppState) => AppState) => void;
+  setNotice: (value: string) => void;
+}) {
+  function updateProfile(patch: Partial<AppState["profile"]>) {
+    mutate((draft) => ({ ...draft, profile: { ...draft.profile, ...patch } }));
+  }
+  function updatePass(id: string, patch: Partial<CommuterPass>) {
+    mutate((draft) => {
+      const pass = draft.commuterPasses.find((item) => item.id === id);
+      if (pass) Object.assign(pass, patch);
+      return draft;
+    });
+  }
+  return <section className="panel basic-info-panel">
+    <div className="panel-heading"><div><span className="eyebrow">設定</span><h2>基本情報</h2><p>申請書へ出力する所属・氏名と、保持する定期区間情報を登録します。</p></div></div>
+    <div className="basic-profile-grid">
+      <Field label="所属"><input aria-label="所属" value={state.profile.department} onChange={(event) => updateProfile({ department: event.target.value })} /></Field>
+      <Field label="氏名"><input aria-label="氏名" value={state.profile.employeeName} onChange={(event) => updateProfile({ employeeName: event.target.value })} /></Field>
+    </div>
+    <div className="basic-section-heading"><div><h3>定期区間情報</h3><p>情報保持のみです。Ver3の旅費判定には使用しません。</p></div><button className="secondary" onClick={() => mutate((draft) => ({ ...draft, commuterPasses: [...draft.commuterPasses, { id: uid(), startStation: "", endStation: "", viaStations: "", lines: "", validFrom: "", validTo: "" }] }))}>＋ 定期区間を追加</button></div>
+    <div className="basic-pass-list">
+      {state.commuterPasses.map((pass, index) => <div className="basic-pass-row" key={pass.id}>
+        <Field label={`定期区間 ${index + 1}・開始駅`}><input aria-label={`定期区間${index + 1} 開始駅`} value={pass.startStation} onChange={(event) => updatePass(pass.id, { startStation: event.target.value })} /></Field>
+        <Field label="終了駅"><input aria-label={`定期区間${index + 1} 終了駅`} value={pass.endStation} onChange={(event) => updatePass(pass.id, { endStation: event.target.value })} /></Field>
+        <Field label="経由駅"><input aria-label={`定期区間${index + 1} 経由駅`} value={pass.viaStations} onChange={(event) => updatePass(pass.id, { viaStations: event.target.value })} /></Field>
+        <Field label="路線"><input aria-label={`定期区間${index + 1} 路線`} value={pass.lines} onChange={(event) => updatePass(pass.id, { lines: event.target.value })} /></Field>
+        <button className="icon-button" onClick={() => mutate((draft) => ({ ...draft, commuterPasses: draft.commuterPasses.filter((item) => item.id !== pass.id) }))}>削除</button>
+      </div>)}
+      {!state.commuterPasses.length && <p className="muted">定期区間情報はまだ登録されていません。</p>}
+    </div>
+    <button className="primary settings-confirm" onClick={() => setNotice("基本情報を保存しました。")}>基本情報を保存</button>
+  </section>;
+}
+
+function DataManagementView({ onBackup, onRestore }: { onBackup: () => void; onRestore: (file: File) => Promise<void> }) {
+  const restoreRef = useRef<HTMLInputElement>(null);
+  return <section className="panel data-management-panel">
+    <div className="panel-heading"><div><span className="eyebrow">設定</span><h2>データ管理</h2><p>このブラウザ内の設定・月データ・実績マスターをバックアップまたは復元します。</p></div></div>
+    <div className="data-management-actions">
+      <article><h3>バックアップ</h3><p>現在のデータをJSONファイルとして保存します。</p><button className="primary" onClick={onBackup}>バックアップを保存</button></article>
+      <article><h3>復元</h3><p>保存済みのJSONバックアップからデータを復元します。</p><button className="secondary" onClick={() => restoreRef.current?.click()}>バックアップから復元</button><input ref={restoreRef} hidden type="file" accept="application/json" onChange={(event) => {
+        const file = event.target.files?.[0];
+        if (file) void onRestore(file);
+        event.currentTarget.value = "";
+      }} /></article>
+    </div>
+  </section>;
 }
 
 function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate: (updater: (draft: AppState) => AppState) => void; setNotice: (value: string) => void }) {
