@@ -234,6 +234,7 @@ export function tabSeparated(lines: ExpenseLine[]): string {
 }
 
 export type ImportedClaimRow = { date: string; destination: string; paidSection: string; icFare: number; reason: string };
+export type ClaimImportPreviewRow = ImportedClaimRow & { id: string; excluded: boolean };
 
 export function parseClaimRows(rows: unknown[][], fallbackYear: number): ImportedClaimRow[] {
   return rows.flatMap((row) => {
@@ -244,6 +245,16 @@ export function parseClaimRows(rows: unknown[][], fallbackYear: number): Importe
     const date = `${fallbackYear}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
     return [{ date, destination, paidSection, icFare, reason }];
   });
+}
+
+export function prepareClaimRowsForRegistration(rows: ClaimImportPreviewRow[]): ImportedClaimRow[] {
+  return rows.filter((row) => !row.excluded).map((row) => ({
+    date: row.date.trim(),
+    destination: row.destination.trim(),
+    paidSection: row.paidSection.trim(),
+    icFare: safeAmount(row.icFare),
+    reason: row.reason.trim(),
+  }));
 }
 
 export function stationsFromSection(paidSection: string): { origin: string; arrival: string } {

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { loadState, saveState } from "./lib/db";
-import { buildDayRoute, copyPages, duplicateKeys, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, parseTextSchedules, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated, uid, yen } from "./lib/domain";
+import { buildDayRoute, copyPages, duplicateKeys, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, parseTextSchedules, prepareClaimRowsForRegistration, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated, uid, yen, type ClaimImportPreviewRow } from "./lib/domain";
 import { createExcel } from "./lib/excel";
 import { createOdsFromTemplate, parseOdsTableRows } from "./lib/ods";
 import { EMPTY_STATE, normalizeState, resolveStartupState, safeAmount, type AppState, type ClaimMaster, type CommuterPass, type ExpenseLine, type ScheduleCapture, type ScheduleItem } from "./lib/types";
@@ -452,7 +452,7 @@ function OdsView({ state, lines, total, setNotice }: { state: AppState; lines: E
 }
 
 function PastClaimsImportView({ state, mutate, setNotice }: { state: AppState; mutate: (updater: (draft: AppState) => AppState) => void; setNotice: (value: string) => void }) {
-  const [busy, setBusy] = useState(false); const [preview, setPreview] = useState<ReturnType<typeof parseClaimRows>>([]); const [fileName, setFileName] = useState("");
+  const [busy, setBusy] = useState(false); const [preview, setPreview] = useState<ClaimImportPreviewRow[]>([]); const [fileName, setFileName] = useState("");
   async function readFile(file: File) {
     setBusy(true); setFileName(file.name);
     try {
@@ -465,22 +465,37 @@ function PastClaimsImportView({ state, mutate, setNotice }: { state: AppState; m
       } else {
         rows = (await file.text()).split(/\r?\n/).filter(Boolean).map((line) => line.split(file.name.toLowerCase().endsWith(".tsv") || line.includes("\t") ? "\t" : ","));
       }
-      const parsed = parseClaimRows(rows, Number(state.selectedMonth.slice(0, 4))); setPreview(parsed);
+      const parsed = parseClaimRows(rows, Number(state.selectedMonth.slice(0, 4)));
+      setPreview(parsed.map((row) => ({ ...row, id: uid(), excluded: false })));
       setNotice(parsed.length ? `${parsed.length}行を読み取りました。内容を確認してマスタへ登録してください。` : "申請明細を検出できませんでした。原本形式または6列のCSVを確認してください。");
     } catch { setPreview([]); setNotice("過去請求データを読み込めませんでした。ODS・XLSX・CSV・TSVファイルを確認してください。"); }
     setBusy(false);
   }
-  function register() {
-    if (!preview.length) return;
-    mutate((draft) => {
-      const before = draft.claimMasters.length; draft.claimMasters = mergeClaimMasters(draft.claimMasters, preview, fileName);
-      draft.claimImports.push({ id: uid(), fileName, importedAt: new Date().toISOString(), rowCount: preview.length, addedCount: draft.claimMasters.length - before }); return draft;
-    });
-    setNotice(`${preview.length}行を過去実績マスタへ登録しました。`); setPreview([]); setFileName("");
+  function updatePreview(id: string, patch: Partial<ClaimImportPreviewRow>) {
+    setPreview((current) => current.map((row) => row.id === id ? { ...row, ...patch, icFare: patch.icFare === undefined ? row.icFare : safeAmount(patch.icFare) } : row));
   }
+  function register() {
+    const targets = prepareClaimRowsForRegistration(preview);
+    if (!targets.length) return setNotice("登録対象の行がありません。");
+    if (targets.some((row) => !/^\d{4}-\d{2}-\d{2}$/.test(row.date) || !row.destination || !row.paidSection)) return setNotice("登録対象行の日付・目的地・区間を確認してください。");
+    mutate((draft) => {
+      const before = draft.claimMasters.length; draft.claimMasters = mergeClaimMasters(draft.claimMasters, targets, fileName);
+      draft.claimImports.push({ id: uid(), fileName, importedAt: new Date().toISOString(), rowCount: targets.length, addedCount: draft.claimMasters.length - before }); return draft;
+    });
+    setNotice(`${targets.length}行を過去実績マスタへ登録しました。`); setPreview([]); setFileName("");
+  }
+  const targetCount = preview.filter((row) => !row.excluded).length;
   return <section className="panel"><div className="panel-heading"><div><span className="eyebrow">ver3 初期設定</span><h2>過去の出張旅費申請書を読み込む</h2><p>ODS・XLSX申請書、または「月・日・目的地・区間・金額・理由」の6列データから実績マスターを作ります。</p></div><div className="summary-card"><span>登録済み実績</span><strong>{state.claimMasters.length}</strong><small>{state.claimImports.length}ファイル取込済み</small></div></div>
     <label className="past-claim-drop"><input type="file" accept=".ods,.xlsx,.csv,.tsv,text/csv" onChange={(event) => event.target.files?.[0] && void readFile(event.target.files[0])} /><b>{busy ? "読み込み中…" : "過去の申請書を選択"}</b><span>ODS・XLSX・CSV・TSV／データは外部へ送信しません</span></label>
-    {preview.length > 0 && <><div className="import-preview"><div className="import-preview-head"><span>日付</span><span>目的地</span><span>有料区間</span><span>IC料金</span><span>理由</span></div>{preview.slice(0, 40).map((row, index) => <div key={`${row.date}-${index}`}><span>{row.date.slice(5)}</span><b>{row.destination}</b><span>{row.paidSection}</span><strong>{yen(row.icFare)}</strong><span>{row.reason}</span></div>)}</div><div className="import-confirm"><span>{fileName}：{preview.length}行</span><button className="primary" onClick={register}>確認して実績マスタへ登録</button></div></>}
+    {preview.length > 0 && <><div className="import-preview editable"><div className="import-preview-head"><span>日付</span><span>目的地</span><span>区間</span><span>金額</span><span>理由</span><span>登録対象</span><span>行操作</span></div>{preview.map((row, index) => <div className={row.excluded ? "excluded" : ""} key={row.id}>
+      <input inputMode="numeric" placeholder="YYYY-MM-DD" aria-label={`${index + 1}行目 日付`} value={row.date} disabled={row.excluded} onChange={(event) => updatePreview(row.id, { date: event.target.value })} />
+      <input aria-label={`${index + 1}行目 目的地`} value={row.destination} disabled={row.excluded} onChange={(event) => updatePreview(row.id, { destination: event.target.value })} />
+      <input aria-label={`${index + 1}行目 区間`} value={row.paidSection} disabled={row.excluded} onChange={(event) => updatePreview(row.id, { paidSection: event.target.value })} />
+      <input aria-label={`${index + 1}行目 金額`} inputMode="numeric" value={safeAmount(row.icFare) || ""} disabled={row.excluded} onChange={(event) => updatePreview(row.id, { icFare: safeAmount(event.target.value) })} />
+      <input aria-label={`${index + 1}行目 理由`} value={row.reason} disabled={row.excluded} onChange={(event) => updatePreview(row.id, { reason: event.target.value })} />
+      <button className={row.excluded ? "secondary" : "target-toggle"} aria-pressed={row.excluded} onClick={() => updatePreview(row.id, { excluded: !row.excluded })}>{row.excluded ? "対象に戻す" : "登録対象"}</button>
+      <button className="icon-button" aria-label={`${index + 1}行目を削除`} onClick={() => setPreview((current) => current.filter((item) => item.id !== row.id))}>削除</button>
+    </div>)}</div><div className="import-confirm"><span>{fileName}：読取 {preview.length}行／登録対象 {targetCount}行</span><button className="primary" disabled={!targetCount} onClick={register}>実績マスターへ登録</button></div></>}
     {state.claimImports.length > 0 && <div className="import-history"><h3>読込履歴</h3>{[...state.claimImports].reverse().map((item) => <div key={item.id}><b>{item.fileName}</b><span>{item.rowCount}行（新規 {item.addedCount}件）</span><small>{new Date(item.importedAt).toLocaleString("ja-JP")}</small></div>)}</div>}
   </section>;
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildDayRoute, copyPages, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated } from "../app/lib/domain";
+import { buildDayRoute, copyPages, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, prepareClaimRowsForRegistration, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated } from "../app/lib/domain";
 import { createInitialState, EMPTY_STATE, normalizeState, resolveStartupState, safeAmount, type AppState, type ExpenseLine, type ScheduleItem } from "../app/lib/types";
 import { readFile } from "node:fs/promises";
 import { createOdsFromTemplate, parseOdsTableRows } from "../app/lib/ods";
@@ -157,6 +157,29 @@ test("同じ過去実績は利用回数を集約し、別運賃は別候補に�
   const masters = mergeClaimMasters([], rows, "過去申請.xlsx");
   assert.equal(masters.length, 2); assert.equal(masters.find((item) => item.icFare === 406)?.useCount, 2); assert.equal(masters[0].sourceName, "過去申請.xlsx");
   assert.deepEqual(stationsFromSection("池袋 → 浦和"), { origin: "池袋", arrival: "浦和" });
+});
+
+test("取込確認中は既存マスターを変更せず、対象行だけを安全な数値で登録準備する", () => {
+  const existing = [{ id: "existing", destination: "本社", origin: "武蔵浦和", arrival: "北与野", paidSection: "武蔵浦和→北与野", icFare: 199, reason: "本社業務", useCount: 1, lastUsedDate: "2026-07-01", sourceName: "既存" }];
+  const before = structuredClone(existing);
+  const targets = prepareClaimRowsForRegistration([
+    { id: "edit", excluded: false, date: " 2026-07-20 ", destination: " 本社 ", paidSection: " 武蔵浦和→北与野 ", icFare: Number.NaN, reason: " 本社業務 " },
+    { id: "exclude", excluded: true, date: "2026-07-21", destination: "削除対象", paidSection: "A→B", icFare: Number.POSITIVE_INFINITY, reason: "対象外" },
+  ]);
+  assert.deepEqual(existing, before);
+  assert.deepEqual(targets, [{ date: "2026-07-20", destination: "本社", paidSection: "武蔵浦和→北与野", icFare: 0, reason: "本社業務" }]);
+  assert.equal(Number.isFinite(targets[0].icFare), true);
+});
+
+test("編集後の完全一致は利用回数と最終利用日を更新し、新規内容は追加する", () => {
+  const existing = [{ id: "existing", destination: "本社", origin: "武蔵浦和", arrival: "北与野", paidSection: "武蔵浦和→北与野", icFare: 199, reason: "本社業務", useCount: 1, lastUsedDate: "2026-07-01", sourceName: "既存" }];
+  const merged = mergeClaimMasters(existing, [
+    { date: "2026-07-20", destination: "本社", paidSection: "武蔵浦和→北与野", icFare: 199, reason: "本社業務" },
+    { date: "2026-07-22", destination: "編集後訪問先", paidSection: "A→B", icFare: 250, reason: "編集後理由" },
+  ], "取込確認.ods");
+  assert.equal(merged.find((item) => item.id === "existing")?.useCount, 2);
+  assert.equal(merged.find((item) => item.id === "existing")?.lastUsedDate, "2026-07-20");
+  assert.equal(merged.find((item) => item.destination === "編集後訪問先")?.icFare, 250);
 });
 
 test("ODSは20行単位のシートと合計計算式を持つ", async () => {

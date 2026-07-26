@@ -139,6 +139,11 @@
 .import-preview > div { display: grid; grid-template-columns: 72px 1.2fr 1.4fr 100px 1fr; gap: 12px; align-items: center; padding: 10px 14px; border-bottom: 1px solid #e4e9e7; }
 .import-preview > div:last-child { border-bottom: 0; }
 .import-preview-head { background: #edf5f1; color: #456158; font-size: .78rem; font-weight: 700; }
+.import-preview.editable { overflow-x: auto; }
+.import-preview.editable > div { min-width: 1080px; grid-template-columns: 145px 1.1fr 1.4fr 105px 1fr 105px 52px; }
+.import-preview.editable input { width: 100%; padding: .58rem .65rem; }
+.import-preview.editable .excluded { background: #f4f4f2; opacity: .72; }
+.import-preview.editable .target-toggle { border: 0; border-radius: 10px; background: #dcece5; color: #24614f; padding: .58rem .6rem; font-weight: 800; }
 .import-confirm { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }
 .import-history { margin-top: 28px; }
 .import-history > div { display: grid; grid-template-columns: 1fr auto auto; gap: 16px; padding: 10px 0; border-bottom: 1px solid #e2e8e5; }
