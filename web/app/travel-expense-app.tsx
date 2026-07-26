@@ -129,7 +129,7 @@ export function TravelExpenseApp() {
   async function restore(file: File) {
     try {
       const value = JSON.parse(await file.text()) as AppState;
-      if (value.version !== 1 || !Array.isArray(value.expenses)) throw new Error();
+      if (![1, 2].includes(Number(value.version)) || !Array.isArray(value.expenses)) throw new Error();
       setState(normalizeState(value)); setNotice("バックアップを復元しました");
     } catch { setNotice("バックアップを復元できませんでした。ファイルを確認してください。"); }
   }

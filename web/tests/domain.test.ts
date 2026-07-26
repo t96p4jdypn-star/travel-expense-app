@@ -41,10 +41,16 @@ test("保存済み実績は空の場合も含めて初期実績で追加・上�
 });
 
 test("旧保存行は入力値を維持してVer3の行状態を補完する", () => {
-  const legacy = state();
-  legacy.expenses = [expense("legacy", { state: undefined as never, createdAt: "" })];
-  const normalized = normalizeState(legacy);
-  assert.equal(normalized.expenses[0].destination, "浦和高校");
+  const legacy = state() as unknown as Omit<AppState, "version"> & { version: number };
+  legacy.version = 1;
+  legacy.expenses = [expense("legacy", {
+    date: "2026-07-01", destination: "", paidSection: "旧自動区間", icFare: 0, claimAmount: 0,
+    reason: "", state: undefined as never, createdAt: "",
+  })];
+  const normalized = normalizeState(legacy as AppState);
+  assert.equal(normalized.version, 2);
+  assert.equal(normalized.expenses[0].date, "2026-07-");
+  assert.equal(normalized.expenses[0].paidSection, "");
   assert.equal(normalized.expenses[0].state, "未確認");
   assert.ok(normalized.expenses[0].createdAt);
 });

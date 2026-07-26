@@ -29,7 +29,7 @@ export type ClaimMaster = {
 export type ClaimImport = { id: string; fileName: string; importedAt: string; rowCount: number; addedCount: number };
 
 export type AppState = {
-  version: 1; selectedMonth: string;
+  version: 2; selectedMonth: string;
   profile: { department: string; employeeName: string; homeName: string; homeStation: string };
   workBases: WorkBase[]; dayRules: DayRule[]; commuterPasses: CommuterPass[];
   places: Place[]; schedules: ScheduleItem[]; expenses: ExpenseLine[]; history: HistoryItem[]; fareRules: FareRule[]; captures: ScheduleCapture[];
@@ -38,7 +38,7 @@ export type AppState = {
 };
 
 export const EMPTY_STATE: AppState = {
-  version: 1,
+  version: 2,
   selectedMonth: new Date().toISOString().slice(0, 7),
   profile: { department: "", employeeName: "", homeName: "自宅", homeStation: "" },
   workBases: [],
@@ -77,6 +77,7 @@ export function safeAmount(value: unknown): number {
 }
 
 export function normalizeState(value: AppState): AppState {
+  const isLegacyVersion = Number((value as { version?: number }).version ?? 0) < 2;
   const migratedFareRules = value.fareRules ?? (value.history ?? []).filter((item) => Number(item.icFare) > 0).reduce<FareRule[]>((rules, item) => {
     if (rules.some((rule) => rule.origin === item.origin && rule.arrival === item.arrival)) return rules;
     rules.push({ id: crypto.randomUUID(), origin: item.origin, arrival: item.arrival, paidSection: item.paidSection || `${item.origin}→${item.arrival}`, icFare: Number(item.icFare), routeDetails: item.routeDetails || "", registeredAt: item.fareCheckedAt || item.usedAt, lastUsedAt: item.usedAt, useCount: item.count || 1 });
@@ -84,19 +85,31 @@ export function normalizeState(value: AppState): AppState {
   }, []);
   const normalized = {
     ...structuredClone(EMPTY_STATE), ...value,
+    version: 2 as const,
     profile: { ...EMPTY_STATE.profile, ...(value.profile ?? {}) },
     workBases: value.workBases ?? [], dayRules: value.dayRules?.length ? value.dayRules : EMPTY_STATE.dayRules,
     commuterPasses: value.commuterPasses ?? [], places: value.places ?? [], schedules: value.schedules ?? [],
     expenses: value.expenses ?? [], history: value.history ?? [], fareRules: migratedFareRules, captures: value.captures ?? [],
     claimMasters: value.claimMasters ?? [], claimImports: value.claimImports ?? [],
   };
-  normalized.expenses = normalized.expenses.map((line, index) => ({
-    ...line,
-    state: line.state ?? "未確認",
-    createdAt: line.createdAt || new Date(Date.UTC(2000, 0, 1, 0, 0, index)).toISOString(),
-    icFare: safeAmount(line.icFare),
-    claimAmount: safeAmount(line.claimAmount),
-  }));
+  normalized.expenses = normalized.expenses.map((line, index) => {
+    const isLegacyAutomaticDraft = isLegacyVersion
+      && !line.destination?.trim()
+      && !line.reason?.trim()
+      && safeAmount(line.icFare) === 0
+      && safeAmount(line.claimAmount) === 0;
+    return {
+      ...line,
+      date: isLegacyAutomaticDraft ? `${normalized.selectedMonth}-` : line.date,
+      origin: isLegacyAutomaticDraft ? "" : line.origin,
+      arrival: isLegacyAutomaticDraft ? "" : line.arrival,
+      paidSection: isLegacyAutomaticDraft ? "" : line.paidSection,
+      state: line.state ?? "未確認",
+      createdAt: line.createdAt || new Date(Date.UTC(2000, 0, 1, 0, 0, index)).toISOString(),
+      icFare: safeAmount(line.icFare),
+      claimAmount: safeAmount(line.claimAmount),
+    };
+  });
   normalized.history = normalized.history.map((item) => ({ ...item, icFare: safeAmount(item.icFare) }));
   normalized.fareRules = normalized.fareRules.map((rule) => ({ ...rule, icFare: safeAmount(rule.icFare) }));
   normalized.claimMasters = normalized.claimMasters.map((master) => ({ ...master, icFare: safeAmount(master.icFare) }));
