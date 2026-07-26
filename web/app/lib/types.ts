@@ -90,7 +90,13 @@ export function normalizeState(value: AppState): AppState {
     expenses: value.expenses ?? [], history: value.history ?? [], fareRules: migratedFareRules, captures: value.captures ?? [],
     claimMasters: value.claimMasters ?? [], claimImports: value.claimImports ?? [],
   };
-  normalized.expenses = normalized.expenses.map((line) => ({ ...line, icFare: safeAmount(line.icFare), claimAmount: safeAmount(line.claimAmount) }));
+  normalized.expenses = normalized.expenses.map((line, index) => ({
+    ...line,
+    state: line.state ?? "未確認",
+    createdAt: line.createdAt || new Date(Date.UTC(2000, 0, 1, 0, 0, index)).toISOString(),
+    icFare: safeAmount(line.icFare),
+    claimAmount: safeAmount(line.claimAmount),
+  }));
   normalized.history = normalized.history.map((item) => ({ ...item, icFare: safeAmount(item.icFare) }));
   normalized.fareRules = normalized.fareRules.map((rule) => ({ ...rule, icFare: safeAmount(rule.icFare) }));
   normalized.claimMasters = normalized.claimMasters.map((master) => ({ ...master, icFare: safeAmount(master.icFare) }));

@@ -1,7 +1,7 @@
 import type { AppState, ExpenseLine } from "./types";
 import { copyPages } from "./domain";
 import { unzipSync } from "fflate";
-import { DOMParser, XMLSerializer, type Element as XmlElement } from "@xmldom/xmldom";
+import { DOMParser, XMLSerializer, type Element as XmlElement, type Node as XmlNode } from "@xmldom/xmldom";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -60,6 +60,17 @@ function zipStore(files: Array<{ name: string; data: Uint8Array }>): Uint8Array 
 
 function elementChildren(parent: XmlElement): XmlElement[] {
   return Array.from(parent.childNodes).filter((node): node is XmlElement => node.nodeType === 1);
+}
+
+function visibleCellText(cell: XmlElement): string {
+  const collect = (node: XmlNode): string => {
+    if (node.nodeType === 3) return node.nodeValue ?? "";
+    if (node.nodeType !== 1) return "";
+    const element = node as XmlElement;
+    if (element.namespaceURI === NS.text && element.localName === "ruby-text") return "";
+    return Array.from(element.childNodes).map(collect).join("");
+  };
+  return collect(cell).trim();
 }
 
 function rowElements(table: XmlElement): XmlElement[] {
@@ -182,15 +193,18 @@ export function parseOdsTableRows(buffer: ArrayBuffer): unknown[][] {
   const content = archive["content.xml"];
   if (!content) throw new Error("ODSにcontent.xmlがありません。");
   const document = new DOMParser().parseFromString(decoder.decode(content), "application/xml");
-  const source = Array.from(document.getElementsByTagNameNS(NS.table, "table"))
-    .find((table) => table.getAttributeNS(NS.table, "name") === TEMPLATE_SHEET);
-  if (!source) throw new Error(`ODSに「${TEMPLATE_SHEET}」シートがありません。`);
-  const valueAt = (row: number, column: number) => {
+  const sources = Array.from(document.getElementsByTagNameNS(NS.table, "table"))
+    .filter((table) => {
+      const name = table.getAttributeNS(NS.table, "name") ?? "";
+      return name === TEMPLATE_SHEET || name.startsWith(`${TEMPLATE_SHEET}_`);
+    });
+  if (!sources.length) throw new Error(`ODSに「${TEMPLATE_SHEET}」シートがありません。`);
+  const valueAt = (source: XmlElement, row: number, column: number) => {
     const cell = cellAt(source, row, column);
-    return cell.getAttributeNS(NS.office, "value") ?? cell.textContent?.trim() ?? "";
+    return cell.getAttributeNS(NS.office, "value") ?? visibleCellText(cell);
   };
-  return Array.from({ length: 20 }, (_, index) => {
-    const row = 11 + index;
-    return [valueAt(row, 1), valueAt(row, 2), valueAt(row, 3), valueAt(row, 4), valueAt(row, 6), valueAt(row, 7)];
-  });
+  return sources.flatMap((source) => Array.from({ length: 20 }, (_, index) => {
+      const row = 11 + index;
+      return [valueAt(source, row, 1), valueAt(source, row, 2), valueAt(source, row, 3), valueAt(source, row, 4), valueAt(source, row, 6), valueAt(source, row, 7)];
+    }));
 }

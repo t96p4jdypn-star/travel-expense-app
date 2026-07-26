@@ -237,14 +237,22 @@ export type ImportedClaimRow = { date: string; destination: string; paidSection:
 export type ClaimImportPreviewRow = ImportedClaimRow & { id: string; excluded: boolean };
 
 export function parseClaimRows(rows: unknown[][], fallbackYear: number): ImportedClaimRow[] {
-  return rows.flatMap((row) => {
-    if (!Array.isArray(row)) return [];
-    const month = Number(row[0]); const day = Number(row[1]); const destination = String(row[2] ?? "").trim();
+  const parsed: ImportedClaimRow[] = [];
+  let inheritedMonth = 0;
+  let inheritedDay = 0;
+  rows.forEach((row) => {
+    if (!Array.isArray(row)) return;
+    const explicitMonth = Number(row[0]);
+    const explicitDay = Number(row[1]);
+    if (explicitMonth >= 1 && explicitMonth <= 12) inheritedMonth = explicitMonth;
+    if (explicitDay >= 1 && explicitDay <= 31) inheritedDay = explicitDay;
+    const month = inheritedMonth; const day = inheritedDay; const destination = String(row[2] ?? "").trim();
     const paidSection = String(row[3] ?? "").trim(); const icFare = safeAmount(String(row[4] ?? "").replace(/[,，円¥￥\s]/g, "")); const reason = String(row[5] ?? "").trim();
-    if (!(month >= 1 && month <= 12 && day >= 1 && day <= 31) || !destination || !paidSection || !(icFare > 0)) return [];
+    if (!(month >= 1 && month <= 12 && day >= 1 && day <= 31) || !destination || !paidSection || !(icFare > 0)) return;
     const date = `${fallbackYear}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-    return [{ date, destination, paidSection, icFare, reason }];
+    parsed.push({ date, destination, paidSection, icFare, reason });
   });
+  return parsed;
 }
 
 export function prepareClaimRowsForRegistration(rows: ClaimImportPreviewRow[]): ImportedClaimRow[] {

@@ -40,6 +40,15 @@ test("保存済み実績は空の場合も含めて初期実績で追加・上�
   assert.deepEqual(resolveStartupState(existingEmpty).claimMasters, []);
 });
 
+test("旧保存行は入力値を維持してVer3の行状態を補完する", () => {
+  const legacy = state();
+  legacy.expenses = [expense("legacy", { state: undefined as never, createdAt: "" })];
+  const normalized = normalizeState(legacy);
+  assert.equal(normalized.expenses[0].destination, "浦和高校");
+  assert.equal(normalized.expenses[0].state, "未確認");
+  assert.ok(normalized.expenses[0].createdAt);
+});
+
 test("出力対象は確認済み・1円以上だけになる", () => {
   const value = state();
   value.expenses = [expense("ok"), expense("zero", { claimAmount: 0 }), expense("hold", { state: "保留" }), expense("dupe", { duplicateWarning: true })];
@@ -142,6 +151,15 @@ test("過去申請書の6列を読み取り、不完全行を除外する", () =
   assert.deepEqual(rows, [{ date: "2026-07-15", destination: "浦和高校", paidSection: "池袋→浦和", icFare: 406, reason: "学校訪問" }]);
 });
 
+test("過去申請で省略された月日は直前明細から引き継ぐ", () => {
+  const rows = parseClaimRows([
+    [4, 22, "大和田", "武蔵浦和→大和田", 366, "入試総括"],
+    ["", "", "南越谷", "大和田→武蔵浦和", 366, "教室管理"],
+    ["", 23, "本社", "武蔵浦和→北与野", 199, "本社業務"],
+  ], 2026);
+  assert.deepEqual(rows.map((row) => row.date), ["2026-04-22", "2026-04-22", "2026-04-23"]);
+});
+
 test("不正な金額は0円へ安全補正する", () => {
   assert.equal(safeAmount(Number.NaN), 0);
   assert.equal(safeAmount(Number.POSITIVE_INFINITY), 0);
@@ -226,4 +244,25 @@ test("原本形式ODSから目的地・区間・金額・理由を取り込む",
   const rows = parseOdsTableRows(zipSync(archive).buffer);
   const parsed = parseClaimRows(rows, 2026);
   assert.deepEqual(parsed, [{ date: "2026-07-15", destination: "川越教室", paidSection: "ふじみ野→川越", icFare: 178, reason: "巡回" }]);
+});
+
+test("過去ODSは追加原本ページを読み、ふりがな注釈を除外する", async () => {
+  const value = state();
+  const template = await readFile(new URL("../public/2026年度版出張旅費代精算書原本.ods", import.meta.url));
+  const lines = Array.from({ length: 21 }, (_, index) => expense(`multi-${index}`, {
+    destination: index === 0 ? "浦和高校" : `目的地${index + 1}`,
+    date: `2026-07-${String((index % 28) + 1).padStart(2, "0")}`,
+  }));
+  const generated = createOdsFromTemplate(template.buffer.slice(template.byteOffset, template.byteOffset + template.byteLength), value, lines);
+  const archive = unzipSync(new Uint8Array(await generated.arrayBuffer()));
+  const content = new TextDecoder().decode(archive["content.xml"])
+    .replace("出張旅費精算_1", "【原本】出張旅費精算")
+    .replace("出張旅費精算_2", "【原本】出張旅費精算_(2)")
+    .replace("<text:p>浦和高校</text:p>", "<text:p><text:ruby><text:ruby-base>浦和高校</text:ruby-base><text:ruby-text>ウラワコウコウ</text:ruby-text></text:ruby></text:p>");
+  archive["content.xml"] = new TextEncoder().encode(content);
+  const rows = parseOdsTableRows(zipSync(archive).buffer);
+  const parsed = parseClaimRows(rows, 2026);
+  assert.equal(rows.length, 40);
+  assert.equal(parsed.length, 21);
+  assert.equal(parsed[0].destination, "浦和高校");
 });

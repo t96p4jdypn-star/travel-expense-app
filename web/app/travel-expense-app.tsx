@@ -264,7 +264,7 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
     input.focus();
     if (target.column === 0 || target.column === 3) input.select();
     pendingFocus.current = null;
-  }, [rows.length]);
+  });
 
   function focusCell(row: number, column: number) {
     pendingFocus.current = { row, column };
@@ -292,7 +292,7 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
     const stations = stationsFromSection(master.paidSection);
     updateRow(id, {
       destination: master.destination, paidSection: master.paidSection, icFare: master.icFare,
-      claimAmount: master.icFare, reason: master.reason, origin: stations.origin, arrival: stations.arrival,
+      claimAmount: master.icFare, reason: master.reason, origin: stations.origin, arrival: stations.arrival, state: "未確認",
     });
     setCandidateRowId("");
     setCandidateIndex(-1);
@@ -300,8 +300,8 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
 
   function finishRow(id: string, rowIndex: number) {
     const current = rows.find((line) => line.id === id);
-    if (!current?.destination.trim() || !current.paidSection.trim()) {
-      setNotice("目的地と区間を入力してください。");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(current?.date ?? "") || !current?.destination.trim() || !current.paidSection.trim()) {
+      setNotice("日付、目的地、区間を入力してください。");
       return;
     }
     mutate((draft) => {
@@ -400,7 +400,7 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
             </button>)}
           </div>}
         </div>
-        <input data-entry={`${rowIndex}-2`} aria-label={`${rowIndex + 1}行目 区間`} placeholder="北与野→武蔵浦和" value={line.paidSection} onChange={(event) => updateRow(line.id, { paidSection: event.target.value, state: "未確認" })} onKeyDown={(event) => handleEnter(event, line, rowIndex, 2)} />
+        <input data-entry={`${rowIndex}-2`} aria-label={`${rowIndex + 1}行目 区間`} value={line.paidSection} onChange={(event) => updateRow(line.id, { paidSection: event.target.value, state: "未確認" })} onKeyDown={(event) => handleEnter(event, line, rowIndex, 2)} />
         <input data-entry={`${rowIndex}-3`} aria-label={`${rowIndex + 1}行目 金額`} inputMode="numeric" value={safeAmount(line.icFare) || ""} onFocus={(event) => event.currentTarget.select()} onChange={(event) => updateRow(line.id, { icFare: safeAmount(event.target.value), state: "未確認" })} onKeyDown={(event) => handleEnter(event, line, rowIndex, 3)} />
         <input data-entry={`${rowIndex}-4`} aria-label={`${rowIndex + 1}行目 理由`} value={line.reason} onChange={(event) => updateRow(line.id, { reason: event.target.value, state: "未確認" })} onKeyDown={(event) => handleEnter(event, line, rowIndex, 4)} />
         <button className="icon-button" aria-label={`${rowIndex + 1}行目を削除`} onClick={() => mutate((draft) => ({ ...draft, expenses: draft.expenses.filter((item) => item.id !== line.id) }))}>削除</button>
