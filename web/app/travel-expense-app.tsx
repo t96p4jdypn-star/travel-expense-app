@@ -4,10 +4,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { loadState, saveState } from "./lib/db";
 import { buildDayRoute, copyPages, duplicateKeys, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, parseTextSchedules, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated, uid, yen } from "./lib/domain";
 import { createExcel } from "./lib/excel";
+import { createOds, parseOdsTableRows } from "./lib/ods";
 import { EMPTY_STATE, normalizeState, type AppState, type ClaimMaster, type CommuterPass, type ExpenseLine, type ScheduleCapture, type ScheduleItem } from "./lib/types";
 
-type Tab = "実績から作成" | "過去データ読込" | "月間" | "予定取込" | "経路確認" | "登録状況" | "コピー出力" | "Excel出力" | "設定";
-const TABS: Tab[] = ["実績から作成", "過去データ読込", "月間", "予定取込", "経路確認", "登録状況", "コピー出力", "Excel出力", "設定"];
+type Tab = "入力" | "実績マスター" | "ODS出力" | "実績から作成" | "過去データ読込" | "月間" | "予定取込" | "経路確認" | "登録状況" | "コピー出力" | "Excel出力" | "設定";
+const TABS: Tab[] = ["入力", "過去データ読込", "実績マスター", "ODS出力", "設定"];
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 
 function download(blob: Blob, filename: string) {
@@ -28,7 +29,7 @@ function StatusBadge({ value }: { value: string }) { return <span className={`st
 export function TravelExpenseApp() {
   const [state, setState] = useState<AppState>(EMPTY_STATE);
   const [ready, setReady] = useState(false);
-  const [tab, setTab] = useState<Tab>("実績から作成");
+  const [tab, setTab] = useState<Tab>("入力");
   const [showZero, setShowZero] = useState(false);
   const [notice, setNotice] = useState("データはこの端末内だけに保存されます");
   const [submissionDate, setSubmissionDate] = useState(new Date().toISOString().slice(0, 10));
@@ -146,6 +147,9 @@ export function TravelExpenseApp() {
         <div className="header-actions"><button className="secondary" onClick={backup}>バックアップ</button><button className="secondary" onClick={() => importRef.current?.click()}>復元</button><input ref={importRef} hidden type="file" accept="application/json" onChange={(e) => e.target.files?.[0] && restore(e.target.files[0])} /></div>
       </section>
       {notice && <div className="notice" role="status"><span>✓</span>{notice}<button aria-label="通知を閉じる" onClick={() => setNotice("")}>×</button></div>}
+      {tab === "入力" && <TableEntryView state={state} mutate={mutate} setNotice={setNotice} />}
+      {tab === "実績マスター" && <ClaimMasterView state={state} mutate={mutate} setNotice={setNotice} />}
+      {tab === "ODS出力" && <OdsView state={state} lines={output} total={total} setNotice={setNotice} />}
       {tab === "実績から作成" && <MasterEntryView state={state} mutate={mutate} setNotice={setNotice} setTab={setTab} />}
       {tab === "過去データ読込" && <PastClaimsImportView state={state} mutate={mutate} setNotice={setNotice} />}
       {tab === "月間" && <MonthlyView state={state} lines={visibleExpenses} total={total} warnings={warnings} showZero={showZero} setShowZero={setShowZero} onAdd={addExpense} onQuickAdd={quickAdd} onUpdate={updateExpense} onRecalculate={recalculateExpense} onConfirm={confirmExpense} onRemove={removeExpense} history={state.history} />}
@@ -166,13 +170,146 @@ export function TravelExpenseApp() {
   }
 }
 
+const TABLE_FIELDS = ["date", "destination", "paidSection", "icFare", "reason"] as const;
+
+function emptyExpense(month: string, day = "01"): ExpenseLine {
+  return {
+    id: uid(), date: `${month}-${day}`, startTime: "09:00", destination: "", origin: "", arrival: "",
+    paidSection: "", icFare: 0, claimAmount: 0, reason: "", state: "未確認", routeOrder: 0,
+    duplicateWarning: false, passCovered: false, hiddenZero: true, createdAt: new Date().toISOString(),
+  };
+}
+
+function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate: (updater: (draft: AppState) => AppState) => void; setNotice: (value: string) => void }) {
+  const rows = state.expenses.filter((line) => line.date.startsWith(state.selectedMonth)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const masters = [...state.claimMasters].sort((a, b) => b.useCount - a.useCount || b.lastUsedDate.localeCompare(a.lastUsedDate));
+
+  useEffect(() => {
+    if (rows.length) return;
+    mutate((draft) => ({ ...draft, expenses: [...draft.expenses, emptyExpense(draft.selectedMonth)] }));
+  }, [state.selectedMonth, rows.length]);
+
+  function focusCell(row: number, column: number) {
+    requestAnimationFrame(() => document.querySelector<HTMLInputElement>(`[data-entry="${row}-${column}"]`)?.focus());
+  }
+
+  function updateRow(id: string, patch: Partial<ExpenseLine>) {
+    mutate((draft) => {
+      const line = draft.expenses.find((item) => item.id === id);
+      if (!line) return draft;
+      Object.assign(line, patch);
+      if (patch.icFare !== undefined) line.claimAmount = Math.max(0, Number(patch.icFare));
+      line.hiddenZero = line.claimAmount === 0;
+      return draft;
+    });
+  }
+
+  function applyMaster(id: string, master: ClaimMaster) {
+    const stations = stationsFromSection(master.paidSection);
+    updateRow(id, {
+      destination: master.destination, paidSection: master.paidSection, icFare: master.icFare,
+      claimAmount: master.icFare, reason: master.reason, origin: stations.origin, arrival: stations.arrival,
+    });
+  }
+
+  function finishRow(id: string, rowIndex: number) {
+    let completed = false;
+    mutate((draft) => {
+      const line = draft.expenses.find((item) => item.id === id);
+      if (!line || !line.destination.trim() || !line.paidSection.trim()) return draft;
+      const firstCompletion = line.state === "未確認";
+      line.icFare = Math.max(0, Number(line.icFare));
+      line.claimAmount = line.icFare;
+      line.hiddenZero = line.icFare === 0;
+      line.state = "確認済み";
+      const stations = stationsFromSection(line.paidSection);
+      line.origin = stations.origin; line.arrival = stations.arrival;
+      if (firstCompletion) {
+        draft.claimMasters = mergeClaimMasters(draft.claimMasters, [{
+          date: line.date, destination: line.destination.trim(), paidSection: line.paidSection.trim(),
+          icFare: line.icFare, reason: line.reason.trim(),
+        }], "画面入力");
+      }
+      const ordered = draft.expenses.filter((item) => item.date.startsWith(draft.selectedMonth)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      if (rowIndex === ordered.length - 1) draft.expenses.push(emptyExpense(draft.selectedMonth, line.date.slice(8, 10)));
+      completed = true;
+      return draft;
+    });
+    if (completed) { setNotice("1行を保存し、実績マスターを更新しました。"); focusCell(rowIndex + 1, 0); }
+    else setNotice("目的地と区間を入力してください。");
+  }
+
+  function handleEnter(event: React.KeyboardEvent<HTMLInputElement>, line: ExpenseLine, rowIndex: number, columnIndex: number) {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    if (columnIndex === 1) {
+      const candidate = masters.find((master) => master.destination === line.destination)
+        ?? masters.find((master) => master.destination.startsWith(line.destination) && line.destination.length > 0);
+      if (candidate) applyMaster(line.id, candidate);
+    }
+    if (columnIndex === TABLE_FIELDS.length - 1) finishRow(line.id, rowIndex);
+    else focusCell(rowIndex, columnIndex + 1);
+  }
+
+  return <section className="panel entry-panel">
+    <div className="panel-heading"><div><span className="eyebrow">ver3 メイン入力</span><h2>今月の旅費を入力</h2><p>1項目ごとにEnterで次へ進みます。目的地は過去実績から候補を選べます。</p></div><div className="summary-card"><span>今月の入力</span><strong>{rows.filter((line) => line.destination).length}</strong><small>保存済み {rows.filter((line) => line.state === "確認済み").length}行</small></div></div>
+    <datalist id="claim-destinations">{masters.map((master) => <option key={master.id} value={master.destination}>{master.paidSection}・{master.icFare}円・{master.reason}</option>)}</datalist>
+    <div className="entry-table">
+      <div className="entry-head"><span>日</span><span>目的地</span><span>区間</span><span>金額</span><span>理由</span><span /></div>
+      {rows.map((line, rowIndex) => <div className={`entry-row ${line.state === "確認済み" ? "complete" : ""}`} key={line.id}>
+        <input data-entry={`${rowIndex}-0`} aria-label={`${rowIndex + 1}行目 日`} inputMode="numeric" value={Number(line.date.slice(8, 10)) || ""} onChange={(event) => {
+          const day = Math.min(31, Math.max(1, Number(event.target.value) || 1)); updateRow(line.id, { date: `${state.selectedMonth}-${String(day).padStart(2, "0")}`, state: "未確認" });
+        }} onKeyDown={(event) => handleEnter(event, line, rowIndex, 0)} />
+        <input data-entry={`${rowIndex}-1`} aria-label={`${rowIndex + 1}行目 目的地`} list="claim-destinations" value={line.destination} onChange={(event) => updateRow(line.id, { destination: event.target.value, state: "未確認" })} onKeyDown={(event) => handleEnter(event, line, rowIndex, 1)} />
+        <input data-entry={`${rowIndex}-2`} aria-label={`${rowIndex + 1}行目 区間`} placeholder="北与野→武蔵浦和" value={line.paidSection} onChange={(event) => updateRow(line.id, { paidSection: event.target.value, state: "未確認" })} onKeyDown={(event) => handleEnter(event, line, rowIndex, 2)} />
+        <input data-entry={`${rowIndex}-3`} aria-label={`${rowIndex + 1}行目 金額`} inputMode="numeric" value={line.icFare || ""} onChange={(event) => updateRow(line.id, { icFare: Math.max(0, Number(event.target.value)), state: "未確認" })} onKeyDown={(event) => handleEnter(event, line, rowIndex, 3)} />
+        <input data-entry={`${rowIndex}-4`} aria-label={`${rowIndex + 1}行目 理由`} value={line.reason} onChange={(event) => updateRow(line.id, { reason: event.target.value, state: "未確認" })} onKeyDown={(event) => handleEnter(event, line, rowIndex, 4)} />
+        <button className="icon-button" aria-label={`${rowIndex + 1}行目を削除`} onClick={() => mutate((draft) => ({ ...draft, expenses: draft.expenses.filter((item) => item.id !== line.id) }))}>削除</button>
+      </div>)}
+    </div>
+    <button className="secondary add-entry-row" onClick={() => mutate((draft) => {
+      const last = rows.at(-1); return { ...draft, expenses: [...draft.expenses, emptyExpense(draft.selectedMonth, last?.date.slice(8, 10) || "01")] };
+    })}>＋ 行を追加</button>
+  </section>;
+}
+
+function ClaimMasterView({ state, mutate, setNotice }: { state: AppState; mutate: (updater: (draft: AppState) => AppState) => void; setNotice: (value: string) => void }) {
+  const masters = [...state.claimMasters].sort((a, b) => b.useCount - a.useCount || b.lastUsedDate.localeCompare(a.lastUsedDate));
+  return <section className="panel"><div className="panel-heading"><div><span className="eyebrow">設定</span><h2>実績マスター管理</h2><p>入力候補の内容を編集・削除できます。</p></div><div className="summary-card"><span>登録済み</span><strong>{masters.length}</strong><small>実績候補</small></div></div>
+    <div className="master-admin"><div className="master-admin-head"><span>目的地</span><span>区間</span><span>金額</span><span>理由</span><span>利用</span><span /></div>
+      {masters.map((master) => <div key={master.id}>
+        <input value={master.destination} onChange={(event) => mutate((draft) => { draft.claimMasters.find((item) => item.id === master.id)!.destination = event.target.value; return draft; })} />
+        <input value={master.paidSection} onChange={(event) => mutate((draft) => { draft.claimMasters.find((item) => item.id === master.id)!.paidSection = event.target.value; return draft; })} />
+        <input inputMode="numeric" value={master.icFare} onChange={(event) => mutate((draft) => { draft.claimMasters.find((item) => item.id === master.id)!.icFare = Math.max(0, Number(event.target.value)); return draft; })} />
+        <input value={master.reason} onChange={(event) => mutate((draft) => { draft.claimMasters.find((item) => item.id === master.id)!.reason = event.target.value; return draft; })} />
+        <span>{master.useCount}回<br/><small>{master.lastUsedDate || "—"}</small></span>
+        <button className="icon-button" onClick={() => { mutate((draft) => ({ ...draft, claimMasters: draft.claimMasters.filter((item) => item.id !== master.id) })); setNotice("実績マスターから削除しました。"); }}>削除</button>
+      </div>)}
+    </div>
+    {!masters.length && <Empty title="実績マスターはまだありません" body="入力画面で1行を完成させると自動登録されます。" />}
+  </section>;
+}
+
+function OdsView({ state, lines, total, setNotice }: { state: AppState; lines: ExpenseLine[]; total: number; setNotice: (value: string) => void }) {
+  function generate() {
+    download(createOds(state, lines), `${state.selectedMonth.replace("-", "")}_出張旅費精算書.ods`);
+    setNotice("ODSファイルを作成しました。LibreOfficeで内容と印刷結果を確認してください。");
+  }
+  return <section className="panel"><div className="panel-heading"><div><span className="eyebrow">ver3 ODS出力</span><h2>出張旅費精算書を作成</h2><p>空白行と0円行を除き、20件ごとにシートを分けます。</p></div><div className="summary-card"><span>出力対象</span><strong>{yen(total)}</strong><small>{lines.length}行・{Math.max(1, Math.ceil(lines.length / 20))}枚</small></div></div>
+    {!state.profile.department || !state.profile.employeeName ? <div className="warning">設定画面で所属と氏名を登録してください。</div> : null}
+    <div className="ods-summary"><p>ファイル名</p><strong>{state.selectedMonth.replace("-", "")}_出張旅費精算書.ods</strong><span>合計はODS内の計算式で算出します。現行社内原本との完全な書式一致は、原本ファイル確認後に調整します。</span><button className="primary large" disabled={!lines.length || !state.profile.department || !state.profile.employeeName} onClick={generate}>ODS申請書を作成</button></div>
+  </section>;
+}
+
 function PastClaimsImportView({ state, mutate, setNotice }: { state: AppState; mutate: (updater: (draft: AppState) => AppState) => void; setNotice: (value: string) => void }) {
   const [busy, setBusy] = useState(false); const [preview, setPreview] = useState<ReturnType<typeof parseClaimRows>>([]); const [fileName, setFileName] = useState("");
   async function readFile(file: File) {
     setBusy(true); setFileName(file.name);
     try {
       let rows: unknown[][] = [];
-      if (/\.xlsx$/i.test(file.name)) {
+      if (/\.ods$/i.test(file.name)) {
+        rows = parseOdsTableRows(await file.arrayBuffer());
+      } else if (/\.xlsx$/i.test(file.name)) {
         const ExcelJS = await import("exceljs"); const workbook = new ExcelJS.Workbook(); await workbook.xlsx.load(await file.arrayBuffer());
         workbook.worksheets.forEach((sheet) => { for (let row = 11; row <= 30; row += 1) rows.push([sheet.getCell(`A${row}`).value, sheet.getCell(`B${row}`).value, sheet.getCell(`C${row}`).value, sheet.getCell(`D${row}`).value, sheet.getCell(`F${row}`).value, sheet.getCell(`G${row}`).value]); });
       } else {
@@ -180,7 +317,7 @@ function PastClaimsImportView({ state, mutate, setNotice }: { state: AppState; m
       }
       const parsed = parseClaimRows(rows, Number(state.selectedMonth.slice(0, 4))); setPreview(parsed);
       setNotice(parsed.length ? `${parsed.length}行を読み取りました。内容を確認してマスタへ登録してください。` : "申請明細を検出できませんでした。原本形式または6列のCSVを確認してください。");
-    } catch { setPreview([]); setNotice("過去請求データを読み込めませんでした。XLSX・CSV・TSVファイルを確認してください。"); }
+    } catch { setPreview([]); setNotice("過去請求データを読み込めませんでした。ODS・XLSX・CSV・TSVファイルを確認してください。"); }
     setBusy(false);
   }
   function register() {
@@ -191,8 +328,8 @@ function PastClaimsImportView({ state, mutate, setNotice }: { state: AppState; m
     });
     setNotice(`${preview.length}行を過去実績マスタへ登録しました。`); setPreview([]); setFileName("");
   }
-  return <section className="panel"><div className="panel-heading"><div><span className="eyebrow">ver2 最初の準備</span><h2>過去の出張旅費請求を読み込む</h2><p>申請書の11～30行、または「月・日・目的地・有料区間・IC料金・理由」の6列データから実績マスタを作ります。</p></div><div className="summary-card"><span>登録済み実績</span><strong>{state.claimMasters.length}</strong><small>{state.claimImports.length}ファイル取込済み</small></div></div>
-    <label className="past-claim-drop"><input type="file" accept=".xlsx,.csv,.tsv,text/csv" onChange={(event) => event.target.files?.[0] && void readFile(event.target.files[0])} /><b>{busy ? "読み込み中…" : "過去の申請書を選択"}</b><span>XLSX・CSV・TSV／データは外部へ送信しません</span></label>
+  return <section className="panel"><div className="panel-heading"><div><span className="eyebrow">ver3 初期設定</span><h2>過去の出張旅費申請書を読み込む</h2><p>ODS・XLSX申請書、または「月・日・目的地・区間・金額・理由」の6列データから実績マスターを作ります。</p></div><div className="summary-card"><span>登録済み実績</span><strong>{state.claimMasters.length}</strong><small>{state.claimImports.length}ファイル取込済み</small></div></div>
+    <label className="past-claim-drop"><input type="file" accept=".ods,.xlsx,.csv,.tsv,text/csv" onChange={(event) => event.target.files?.[0] && void readFile(event.target.files[0])} /><b>{busy ? "読み込み中…" : "過去の申請書を選択"}</b><span>ODS・XLSX・CSV・TSV／データは外部へ送信しません</span></label>
     {preview.length > 0 && <><div className="import-preview"><div className="import-preview-head"><span>日付</span><span>目的地</span><span>有料区間</span><span>IC料金</span><span>理由</span></div>{preview.slice(0, 40).map((row, index) => <div key={`${row.date}-${index}`}><span>{row.date.slice(5)}</span><b>{row.destination}</b><span>{row.paidSection}</span><strong>{yen(row.icFare)}</strong><span>{row.reason}</span></div>)}</div><div className="import-confirm"><span>{fileName}：{preview.length}行</span><button className="primary" onClick={register}>確認して実績マスタへ登録</button></div></>}
     {state.claimImports.length > 0 && <div className="import-history"><h3>読込履歴</h3>{[...state.claimImports].reverse().map((item) => <div key={item.id}><b>{item.fileName}</b><span>{item.rowCount}行（新規 {item.addedCount}件）</span><small>{new Date(item.importedAt).toLocaleString("ja-JP")}</small></div>)}</div>}
   </section>;

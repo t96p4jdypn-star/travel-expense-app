@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildDayRoute, copyPages, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated } from "../app/lib/domain";
 import { EMPTY_STATE, normalizeState, type AppState, type ExpenseLine, type ScheduleItem } from "../app/lib/types";
+import { createOds } from "../app/lib/ods";
 
 const expense = (id: string, patch: Partial<ExpenseLine> = {}): ExpenseLine => ({
   id, date: "2026-07-15", startTime: "09:00", destination: "浦和高校", origin: "池袋", arrival: "浦和",
@@ -118,4 +119,19 @@ test("同じ過去実績は利用回数を集約し、別運賃は別候補に�
   const masters = mergeClaimMasters([], rows, "過去申請.xlsx");
   assert.equal(masters.length, 2); assert.equal(masters.find((item) => item.icFare === 406)?.useCount, 2); assert.equal(masters[0].sourceName, "過去申請.xlsx");
   assert.deepEqual(stationsFromSection("池袋 → 浦和"), { origin: "池袋", arrival: "浦和" });
+});
+
+test("ODSは20行単位のシートと合計計算式を持つ", async () => {
+  const value = state();
+  value.profile.department = "営業部";
+  value.profile.employeeName = "山田 太郎";
+  const lines = Array.from({ length: 21 }, (_, index) => expense(String(index), { date: `2026-07-${String((index % 28) + 1).padStart(2, "0")}` }));
+  const blob = createOds(value, lines);
+  const binary = new Uint8Array(await blob.arrayBuffer());
+  const storedText = new TextDecoder().decode(binary);
+  assert.equal(blob.type, "application/vnd.oasis.opendocument.spreadsheet");
+  assert.equal(String.fromCharCode(...binary.slice(0, 2)), "PK");
+  assert.match(storedText, /出張旅費精算_1/);
+  assert.match(storedText, /出張旅費精算_2/);
+  assert.match(storedText, /table:formula="of:=SUM\(\[\.E5:\.E24\]\)"/);
 });

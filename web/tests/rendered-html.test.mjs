@@ -41,7 +41,10 @@ test("公開物にPWA定義と端末内OCRモデルを同梱する", async () =>
   assert.match(app, /簡単入力のIC料金/);
   assert.match(app, /初回は入力してください/);
   assert.match(app, /登録状況/);
-  assert.match(app, /過去の出張旅費請求を読み込む/);
+  assert.match(app, /過去の出張旅費申請書を読み込む/);
+  assert.match(app, /今月の旅費を入力/);
+  assert.match(app, /実績マスター管理/);
+  assert.match(app, /ODS申請書を作成/);
   assert.match(app, /日付を選び、過去実績から確定/);
   assert.match(app, /この日を確定して次へ/);
   assert.doesNotMatch(app, /fetch\("\/api\/fare"/);
