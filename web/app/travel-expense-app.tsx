@@ -5,7 +5,7 @@ import { loadState, saveState } from "./lib/db";
 import { buildDayRoute, copyPages, duplicateKeys, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, parseTextSchedules, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated, uid, yen } from "./lib/domain";
 import { createExcel } from "./lib/excel";
 import { createOdsFromTemplate, parseOdsTableRows } from "./lib/ods";
-import { EMPTY_STATE, normalizeState, type AppState, type ClaimMaster, type CommuterPass, type ExpenseLine, type ScheduleCapture, type ScheduleItem } from "./lib/types";
+import { EMPTY_STATE, normalizeState, safeAmount, type AppState, type ClaimMaster, type CommuterPass, type ExpenseLine, type ScheduleCapture, type ScheduleItem } from "./lib/types";
 
 type Tab = "入力" | "実績マスター" | "ODS出力" | "実績から作成" | "過去データ読込" | "月間" | "予定取込" | "経路確認" | "登録状況" | "コピー出力" | "Excel出力" | "設定";
 const TABS: Tab[] = ["入力", "過去データ読込", "実績マスター", "ODS出力", "設定"];
@@ -183,14 +183,34 @@ function emptyExpense(month: string, day = "01"): ExpenseLine {
 function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate: (updater: (draft: AppState) => AppState) => void; setNotice: (value: string) => void }) {
   const rows = state.expenses.filter((line) => line.date.startsWith(state.selectedMonth)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const masters = [...state.claimMasters].sort((a, b) => b.useCount - a.useCount || b.lastUsedDate.localeCompare(a.lastUsedDate));
+  const pendingFocus = useRef<{ row: number; column: number } | null>(null);
+  const [candidateRowId, setCandidateRowId] = useState("");
+  const [candidateIndex, setCandidateIndex] = useState(-1);
 
   useEffect(() => {
     if (rows.length) return;
     mutate((draft) => ({ ...draft, expenses: [...draft.expenses, emptyExpense(draft.selectedMonth)] }));
   }, [state.selectedMonth, rows.length]);
 
+  useEffect(() => {
+    const target = pendingFocus.current;
+    if (!target) return;
+    const input = document.querySelector<HTMLInputElement>(`[data-entry="${target.row}-${target.column}"]`);
+    if (!input) return;
+    input.focus();
+    if (target.column === 0 || target.column === 3) input.select();
+    pendingFocus.current = null;
+  }, [rows.length]);
+
   function focusCell(row: number, column: number) {
-    requestAnimationFrame(() => document.querySelector<HTMLInputElement>(`[data-entry="${row}-${column}"]`)?.focus());
+    pendingFocus.current = { row, column };
+    requestAnimationFrame(() => {
+      const input = document.querySelector<HTMLInputElement>(`[data-entry="${row}-${column}"]`);
+      if (!input) return;
+      input.focus();
+      if (column === 0 || column === 3) input.select();
+      pendingFocus.current = null;
+    });
   }
 
   function updateRow(id: string, patch: Partial<ExpenseLine>) {
@@ -198,7 +218,7 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
       const line = draft.expenses.find((item) => item.id === id);
       if (!line) return draft;
       Object.assign(line, patch);
-      if (patch.icFare !== undefined) line.claimAmount = Math.max(0, Number(patch.icFare));
+      if (patch.icFare !== undefined) line.claimAmount = safeAmount(patch.icFare);
       line.hiddenZero = line.claimAmount === 0;
       return draft;
     });
@@ -210,15 +230,21 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
       destination: master.destination, paidSection: master.paidSection, icFare: master.icFare,
       claimAmount: master.icFare, reason: master.reason, origin: stations.origin, arrival: stations.arrival,
     });
+    setCandidateRowId("");
+    setCandidateIndex(-1);
   }
 
   function finishRow(id: string, rowIndex: number) {
-    let completed = false;
+    const current = rows.find((line) => line.id === id);
+    if (!current?.destination.trim() || !current.paidSection.trim()) {
+      setNotice("目的地と区間を入力してください。");
+      return;
+    }
     mutate((draft) => {
       const line = draft.expenses.find((item) => item.id === id);
-      if (!line || !line.destination.trim() || !line.paidSection.trim()) return draft;
+      if (!line) return draft;
       const firstCompletion = line.state === "未確認";
-      line.icFare = Math.max(0, Number(line.icFare));
+      line.icFare = safeAmount(line.icFare);
       line.claimAmount = line.icFare;
       line.hiddenZero = line.icFare === 0;
       line.state = "確認済み";
@@ -232,40 +258,88 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
       }
       const ordered = draft.expenses.filter((item) => item.date.startsWith(draft.selectedMonth)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       if (rowIndex === ordered.length - 1) draft.expenses.push(emptyExpense(draft.selectedMonth, line.date.slice(8, 10)));
-      completed = true;
       return draft;
     });
-    if (completed) { setNotice("1行を保存し、実績マスターを更新しました。"); focusCell(rowIndex + 1, 0); }
-    else setNotice("目的地と区間を入力してください。");
+    setNotice("1行を保存し、実績マスターを更新しました。");
+    focusCell(rowIndex + 1, 0);
   }
 
   function handleEnter(event: React.KeyboardEvent<HTMLInputElement>, line: ExpenseLine, rowIndex: number, columnIndex: number) {
     if (event.key !== "Enter") return;
     event.preventDefault();
-    if (columnIndex === 1) {
-      const candidate = masters.find((master) => master.destination === line.destination)
-        ?? masters.find((master) => master.destination.startsWith(line.destination) && line.destination.length > 0);
-      if (candidate) applyMaster(line.id, candidate);
-    }
     if (columnIndex === TABLE_FIELDS.length - 1) finishRow(line.id, rowIndex);
     else focusCell(rowIndex, columnIndex + 1);
   }
 
+  function matchingMasters(value: string) {
+    const query = value.trim().toLocaleLowerCase("ja-JP");
+    if (!query) return masters.slice(0, 8);
+    return masters.filter((master) => master.destination.toLocaleLowerCase("ja-JP").includes(query)).slice(0, 8);
+  }
+
+  function handleDestinationKey(event: React.KeyboardEvent<HTMLInputElement>, line: ExpenseLine, rowIndex: number) {
+    const candidates = matchingMasters(line.destination);
+    if (event.key === "ArrowDown" && candidates.length) {
+      event.preventDefault();
+      setCandidateRowId(line.id);
+      setCandidateIndex((current) => current < 0 ? 0 : (current + 1) % candidates.length);
+      return;
+    }
+    if (event.key === "ArrowUp" && candidates.length) {
+      event.preventDefault();
+      setCandidateRowId(line.id);
+      setCandidateIndex((current) => current < 0 ? candidates.length - 1 : (current - 1 + candidates.length) % candidates.length);
+      return;
+    }
+    if (event.key === "Escape") {
+      setCandidateRowId("");
+      setCandidateIndex(-1);
+      return;
+    }
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    if (candidateRowId === line.id && candidateIndex >= 0 && candidates[candidateIndex]) applyMaster(line.id, candidates[candidateIndex]);
+    setCandidateRowId("");
+    setCandidateIndex(-1);
+    focusCell(rowIndex, 2);
+  }
+
   return <section className="panel entry-panel">
     <div className="panel-heading"><div><span className="eyebrow">ver3 メイン入力</span><h2>今月の旅費を入力</h2><p>1項目ごとにEnterで次へ進みます。目的地は過去実績から候補を選べます。</p></div><div className="summary-card"><span>今月の入力</span><strong>{rows.filter((line) => line.destination).length}</strong><small>保存済み {rows.filter((line) => line.state === "確認済み").length}行</small></div></div>
-    <datalist id="claim-destinations">{masters.map((master) => <option key={master.id} value={master.destination}>{master.paidSection}・{master.icFare}円・{master.reason}</option>)}</datalist>
     <div className="entry-table">
       <div className="entry-head"><span>日</span><span>目的地</span><span>区間</span><span>金額</span><span>理由</span><span /></div>
-      {rows.map((line, rowIndex) => <div className={`entry-row ${line.state === "確認済み" ? "complete" : ""}`} key={line.id}>
+      {rows.map((line, rowIndex) => {
+        const candidates = candidateRowId === line.id ? matchingMasters(line.destination) : [];
+        return <div className={`entry-row ${line.state === "確認済み" ? "complete" : ""}`} key={line.id}>
         <input data-entry={`${rowIndex}-0`} aria-label={`${rowIndex + 1}行目 日`} inputMode="numeric" value={Number(line.date.slice(8, 10)) || ""} onChange={(event) => {
           const day = Math.min(31, Math.max(1, Number(event.target.value) || 1)); updateRow(line.id, { date: `${state.selectedMonth}-${String(day).padStart(2, "0")}`, state: "未確認" });
-        }} onKeyDown={(event) => handleEnter(event, line, rowIndex, 0)} />
-        <input data-entry={`${rowIndex}-1`} aria-label={`${rowIndex + 1}行目 目的地`} list="claim-destinations" value={line.destination} onChange={(event) => updateRow(line.id, { destination: event.target.value, state: "未確認" })} onKeyDown={(event) => handleEnter(event, line, rowIndex, 1)} />
+        }} onFocus={(event) => event.currentTarget.select()} onKeyDown={(event) => handleEnter(event, line, rowIndex, 0)} />
+        <div className="destination-cell">
+          <input data-entry={`${rowIndex}-1`} role="combobox" aria-autocomplete="list" aria-label={`${rowIndex + 1}行目 目的地`} aria-expanded={candidateRowId === line.id && candidates.length > 0} aria-controls={`candidate-list-${line.id}`} value={line.destination} onFocus={() => {
+            const nextCandidates = matchingMasters(line.destination);
+            setCandidateRowId(line.id);
+            setCandidateIndex(nextCandidates.length === 1 ? 0 : -1);
+          }} onChange={(event) => {
+            const value = event.target.value;
+            updateRow(line.id, { destination: value, state: "未確認" });
+            setCandidateRowId(line.id);
+            setCandidateIndex(matchingMasters(value).length === 1 ? 0 : -1);
+          }} onKeyDown={(event) => handleDestinationKey(event, line, rowIndex)} />
+          {candidates.length > 0 && <div className="candidate-list" id={`candidate-list-${line.id}`} role="listbox">
+            {candidates.map((master, index) => <button type="button" role="option" aria-selected={candidateIndex === index} className={candidateIndex === index ? "selected" : ""} key={master.id} onMouseDown={(event) => event.preventDefault()} onClick={() => {
+              applyMaster(line.id, master);
+              focusCell(rowIndex, 2);
+            }}>
+              <b>{master.destination}</b><span>{master.paidSection}</span><strong>{safeAmount(master.icFare).toLocaleString("ja-JP")}円</strong><small>{master.reason || "理由なし"}</small>
+            </button>)}
+          </div>}
+        </div>
         <input data-entry={`${rowIndex}-2`} aria-label={`${rowIndex + 1}行目 区間`} placeholder="北与野→武蔵浦和" value={line.paidSection} onChange={(event) => updateRow(line.id, { paidSection: event.target.value, state: "未確認" })} onKeyDown={(event) => handleEnter(event, line, rowIndex, 2)} />
-        <input data-entry={`${rowIndex}-3`} aria-label={`${rowIndex + 1}行目 金額`} inputMode="numeric" value={line.icFare || ""} onChange={(event) => updateRow(line.id, { icFare: Math.max(0, Number(event.target.value)), state: "未確認" })} onKeyDown={(event) => handleEnter(event, line, rowIndex, 3)} />
+        <input data-entry={`${rowIndex}-3`} aria-label={`${rowIndex + 1}行目 金額`} inputMode="numeric" value={safeAmount(line.icFare) || ""} onFocus={(event) => event.currentTarget.select()} onChange={(event) => updateRow(line.id, { icFare: safeAmount(event.target.value), state: "未確認" })} onKeyDown={(event) => handleEnter(event, line, rowIndex, 3)} />
         <input data-entry={`${rowIndex}-4`} aria-label={`${rowIndex + 1}行目 理由`} value={line.reason} onChange={(event) => updateRow(line.id, { reason: event.target.value, state: "未確認" })} onKeyDown={(event) => handleEnter(event, line, rowIndex, 4)} />
         <button className="icon-button" aria-label={`${rowIndex + 1}行目を削除`} onClick={() => mutate((draft) => ({ ...draft, expenses: draft.expenses.filter((item) => item.id !== line.id) }))}>削除</button>
-      </div>)}
+      </div>;
+      })}
     </div>
     <button className="secondary add-entry-row" onClick={() => mutate((draft) => {
       const last = rows.at(-1); return { ...draft, expenses: [...draft.expenses, emptyExpense(draft.selectedMonth, last?.date.slice(8, 10) || "01")] };
@@ -280,7 +354,7 @@ function ClaimMasterView({ state, mutate, setNotice }: { state: AppState; mutate
       {masters.map((master) => <div key={master.id}>
         <input value={master.destination} onChange={(event) => mutate((draft) => { draft.claimMasters.find((item) => item.id === master.id)!.destination = event.target.value; return draft; })} />
         <input value={master.paidSection} onChange={(event) => mutate((draft) => { draft.claimMasters.find((item) => item.id === master.id)!.paidSection = event.target.value; return draft; })} />
-        <input inputMode="numeric" value={master.icFare} onChange={(event) => mutate((draft) => { draft.claimMasters.find((item) => item.id === master.id)!.icFare = Math.max(0, Number(event.target.value)); return draft; })} />
+        <input inputMode="numeric" value={safeAmount(master.icFare) || ""} onFocus={(event) => event.currentTarget.select()} onChange={(event) => mutate((draft) => { draft.claimMasters.find((item) => item.id === master.id)!.icFare = safeAmount(event.target.value); return draft; })} />
         <input value={master.reason} onChange={(event) => mutate((draft) => { draft.claimMasters.find((item) => item.id === master.id)!.reason = event.target.value; return draft; })} />
         <span>{master.useCount}回<br/><small>{master.lastUsedDate || "—"}</small></span>
         <button className="icon-button" onClick={() => { mutate((draft) => ({ ...draft, claimMasters: draft.claimMasters.filter((item) => item.id !== master.id) })); setNotice("実績マスターから削除しました。"); }}>削除</button>

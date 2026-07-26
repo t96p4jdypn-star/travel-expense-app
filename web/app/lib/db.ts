@@ -19,5 +19,5 @@ export async function loadState(): Promise<AppState | null> {
 }
 
 export async function saveState(data: AppState): Promise<void> {
-  await db.states.put({ id: "current", data, updatedAt: new Date().toISOString() });
+  await db.states.put({ id: "current", data: normalizeState(data), updatedAt: new Date().toISOString() });
 }

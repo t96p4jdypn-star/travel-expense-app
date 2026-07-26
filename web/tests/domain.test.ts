@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildDayRoute, copyPages, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated } from "../app/lib/domain";
-import { EMPTY_STATE, normalizeState, type AppState, type ExpenseLine, type ScheduleItem } from "../app/lib/types";
+import { EMPTY_STATE, normalizeState, safeAmount, type AppState, type ExpenseLine, type ScheduleItem } from "../app/lib/types";
 import { readFile } from "node:fs/promises";
-import { createOdsFromTemplate } from "../app/lib/ods";
-import { unzipSync } from "fflate";
+import { createOdsFromTemplate, parseOdsTableRows } from "../app/lib/ods";
+import { unzipSync, zipSync } from "fflate";
 
 const expense = (id: string, patch: Partial<ExpenseLine> = {}): ExpenseLine => ({
   id, date: "2026-07-15", startTime: "09:00", destination: "浦和高校", origin: "池袋", arrival: "浦和",
@@ -116,6 +116,16 @@ test("過去申請書の6列を読み取り、不完全行を除外する", () =
   assert.deepEqual(rows, [{ date: "2026-07-15", destination: "浦和高校", paidSection: "池袋→浦和", icFare: 406, reason: "学校訪問" }]);
 });
 
+test("不正な金額は0円へ安全補正する", () => {
+  assert.equal(safeAmount(Number.NaN), 0);
+  assert.equal(safeAmount(Number.POSITIVE_INFINITY), 0);
+  assert.equal(safeAmount("金額なし"), 0);
+  assert.equal(safeAmount("199"), 199);
+  const value = state();
+  value.claimMasters = [{ id: "m", destination: "本社", origin: "武蔵浦和", arrival: "北与野", paidSection: "武蔵浦和→北与野", icFare: Number.NaN, reason: "本社業務", useCount: 1, lastUsedDate: "2026-07-01", sourceName: "旧データ" }];
+  assert.equal(normalizeState(value).claimMasters[0].icFare, 0);
+});
+
 test("同じ過去実績は利用回数を集約し、別運賃は別候補にする", () => {
   const rows = parseClaimRows([[7, 15, "浦和高校", "池袋→浦和", 406, "学校訪問"], [7, 20, "浦和高校", "池袋→浦和", 406, "学校訪問"], [8, 1, "浦和高校", "池袋→浦和", 420, "学校訪問"]], 2026);
   const masters = mergeClaimMasters([], rows, "過去申請.xlsx");
@@ -140,4 +150,31 @@ test("ODSは20行単位のシートと合計計算式を持つ", async () => {
   assert.match(storedText, /table:formula="of:=SUM\(\[\.F11:\.F30\]\)"/);
   assert.match(storedText, /営業部/);
   assert.match(storedText, /山田 太郎/);
+});
+
+test("過去ODSは原本シートの11～30行だけを解析する", async () => {
+  const template = await readFile(new URL("../public/2026年度版出張旅費代精算書原本.ods", import.meta.url));
+  const rows = parseOdsTableRows(template.buffer.slice(template.byteOffset, template.byteOffset + template.byteLength));
+  assert.equal(rows.length, 20);
+  assert.ok(rows.every((row) => row.length === 6));
+  assert.ok(rows.every((row) => !row.some((value) => String(value).includes("記入例"))));
+});
+
+test("原本形式ODSから目的地・区間・金額・理由を取り込む", async () => {
+  const value = state();
+  value.profile.department = "営業部";
+  value.profile.employeeName = "山田 太郎";
+  const template = await readFile(new URL("../public/2026年度版出張旅費代精算書原本.ods", import.meta.url));
+  const generated = createOdsFromTemplate(
+    template.buffer.slice(template.byteOffset, template.byteOffset + template.byteLength),
+    value,
+    [expense("import", { destination: "川越教室", paidSection: "ふじみ野→川越", claimAmount: 178, icFare: 178, reason: "巡回" })],
+  );
+  const archive = unzipSync(new Uint8Array(await generated.arrayBuffer()));
+  archive["content.xml"] = new TextEncoder().encode(
+    new TextDecoder().decode(archive["content.xml"]).replace("出張旅費精算_1", "【原本】出張旅費精算"),
+  );
+  const rows = parseOdsTableRows(zipSync(archive).buffer);
+  const parsed = parseClaimRows(rows, 2026);
+  assert.deepEqual(parsed, [{ date: "2026-07-15", destination: "川越教室", paidSection: "ふじみ野→川越", icFare: 178, reason: "巡回" }]);
 });

@@ -182,14 +182,15 @@ export function parseOdsTableRows(buffer: ArrayBuffer): unknown[][] {
   const content = archive["content.xml"];
   if (!content) throw new Error("ODSにcontent.xmlがありません。");
   const document = new DOMParser().parseFromString(decoder.decode(content), "application/xml");
-  return [...document.getElementsByTagName("table:table-row")].map((row) => {
-    const values: unknown[] = [];
-    for (const cell of elementChildren(row)) {
-      if (!["table:table-cell", "table:covered-table-cell"].includes(cell.tagName)) continue;
-      const repeated = Math.min(20, Math.max(1, Number(cell.getAttribute("table:number-columns-repeated")) || 1));
-      const raw = cell.getAttribute("office:value") ?? cell.textContent?.trim() ?? "";
-      for (let index = 0; index < repeated; index += 1) values.push(raw);
-    }
-    return values;
+  const source = Array.from(document.getElementsByTagNameNS(NS.table, "table"))
+    .find((table) => table.getAttributeNS(NS.table, "name") === TEMPLATE_SHEET);
+  if (!source) throw new Error(`ODSに「${TEMPLATE_SHEET}」シートがありません。`);
+  const valueAt = (row: number, column: number) => {
+    const cell = cellAt(source, row, column);
+    return cell.getAttributeNS(NS.office, "value") ?? cell.textContent?.trim() ?? "";
+  };
+  return Array.from({ length: 20 }, (_, index) => {
+    const row = 11 + index;
+    return [valueAt(row, 1), valueAt(row, 2), valueAt(row, 3), valueAt(row, 4), valueAt(row, 6), valueAt(row, 7)];
   });
 }

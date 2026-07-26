@@ -46,13 +46,18 @@ export const EMPTY_STATE: AppState = {
   commuterPasses: [], places: [], schedules: [], expenses: [], history: [], fareRules: [], captures: [], claimMasters: [], claimImports: [], lastSavedAt: new Date().toISOString(),
 };
 
+export function safeAmount(value: unknown): number {
+  const amount = typeof value === "string" && value.trim() === "" ? 0 : Number(value);
+  return Number.isFinite(amount) && amount >= 0 ? amount : 0;
+}
+
 export function normalizeState(value: AppState): AppState {
   const migratedFareRules = value.fareRules ?? (value.history ?? []).filter((item) => Number(item.icFare) > 0).reduce<FareRule[]>((rules, item) => {
     if (rules.some((rule) => rule.origin === item.origin && rule.arrival === item.arrival)) return rules;
     rules.push({ id: crypto.randomUUID(), origin: item.origin, arrival: item.arrival, paidSection: item.paidSection || `${item.origin}→${item.arrival}`, icFare: Number(item.icFare), routeDetails: item.routeDetails || "", registeredAt: item.fareCheckedAt || item.usedAt, lastUsedAt: item.usedAt, useCount: item.count || 1 });
     return rules;
   }, []);
-  return {
+  const normalized = {
     ...structuredClone(EMPTY_STATE), ...value,
     profile: { ...EMPTY_STATE.profile, ...(value.profile ?? {}) },
     workBases: value.workBases ?? [], dayRules: value.dayRules?.length ? value.dayRules : EMPTY_STATE.dayRules,
@@ -60,4 +65,9 @@ export function normalizeState(value: AppState): AppState {
     expenses: value.expenses ?? [], history: value.history ?? [], fareRules: migratedFareRules, captures: value.captures ?? [],
     claimMasters: value.claimMasters ?? [], claimImports: value.claimImports ?? [],
   };
+  normalized.expenses = normalized.expenses.map((line) => ({ ...line, icFare: safeAmount(line.icFare), claimAmount: safeAmount(line.claimAmount) }));
+  normalized.history = normalized.history.map((item) => ({ ...item, icFare: safeAmount(item.icFare) }));
+  normalized.fareRules = normalized.fareRules.map((rule) => ({ ...rule, icFare: safeAmount(rule.icFare) }));
+  normalized.claimMasters = normalized.claimMasters.map((master) => ({ ...master, icFare: safeAmount(master.icFare) }));
+  return normalized;
 }
