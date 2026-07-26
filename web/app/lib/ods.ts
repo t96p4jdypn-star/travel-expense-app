@@ -1,14 +1,16 @@
 import type { AppState, ExpenseLine } from "./types";
 import { copyPages } from "./domain";
 import { unzipSync } from "fflate";
+import { DOMParser, XMLSerializer, type Element as XmlElement } from "@xmldom/xmldom";
 
 const encoder = new TextEncoder();
-
-function xml(value: unknown): string {
-  return String(value ?? "").replace(/[<>&'"]/g, (character) => ({
-    "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;",
-  })[character] ?? character);
-}
+const decoder = new TextDecoder();
+const NS = {
+  office: "urn:oasis:names:tc:opendocument:xmlns:office:1.0",
+  table: "urn:oasis:names:tc:opendocument:xmlns:table:1.0",
+  text: "urn:oasis:names:tc:opendocument:xmlns:text:1.0",
+};
+const TEMPLATE_SHEET = "【原本】出張旅費精算";
 
 function crc32(bytes: Uint8Array): number {
   let crc = 0xffffffff;
@@ -56,63 +58,133 @@ function zipStore(files: Array<{ name: string; data: Uint8Array }>): Uint8Array 
   ]);
 }
 
-function textCell(value: unknown, style = "cell"): string {
-  return `<table:table-cell table:style-name="${style}" office:value-type="string"><text:p>${xml(value)}</text:p></table:table-cell>`;
+function elementChildren(parent: XmlElement): XmlElement[] {
+  return Array.from(parent.childNodes).filter((node): node is XmlElement => node.nodeType === 1);
 }
 
-function numberCell(value: number, style = "cell"): string {
-  return `<table:table-cell table:style-name="${style}" office:value-type="float" office:value="${value}"><text:p>${value}</text:p></table:table-cell>`;
+function rowElements(table: XmlElement): XmlElement[] {
+  return elementChildren(table).filter((element) => element.namespaceURI === NS.table && element.localName === "table-row");
 }
 
-function contentXml(state: AppState, lines: ExpenseLine[]): string {
+function expandFirstColumns(row: XmlElement, limit = 8): void {
+  let column = 1;
+  for (const cell of elementChildren(row)) {
+    if (cell.namespaceURI !== NS.table || !["table-cell", "covered-table-cell"].includes(cell.localName ?? "")) continue;
+    const repeated = Math.max(1, Number(cell.getAttributeNS(NS.table, "number-columns-repeated")) || 1);
+    if (repeated > 1 && column <= limit) {
+      const expanded = Math.min(repeated, limit - column + 1);
+      for (let index = 0; index < expanded; index += 1) {
+        const clone = cell.cloneNode(true) as XmlElement;
+        clone.removeAttributeNS(NS.table, "number-columns-repeated");
+        row.insertBefore(clone, cell);
+      }
+      const remainder = repeated - expanded;
+      if (remainder > 0) cell.setAttributeNS(NS.table, "table:number-columns-repeated", String(remainder));
+      else row.removeChild(cell);
+    }
+    column += repeated;
+  }
+}
+
+function cellAt(table: XmlElement, rowNumber: number, columnNumber: number): XmlElement {
+  const row = rowElements(table)[rowNumber - 1];
+  if (!row) throw new Error(`原本の${rowNumber}行目がありません。`);
+  expandFirstColumns(row);
+  let column = 1;
+  for (const cell of elementChildren(row)) {
+    if (cell.namespaceURI !== NS.table || !["table-cell", "covered-table-cell"].includes(cell.localName ?? "")) continue;
+    const repeated = Math.max(1, Number(cell.getAttributeNS(NS.table, "number-columns-repeated")) || 1);
+    if (columnNumber >= column && columnNumber < column + repeated) return cell;
+    column += repeated;
+  }
+  throw new Error(`原本の${rowNumber}行${columnNumber}列目がありません。`);
+}
+
+function clearCellValue(cell: XmlElement): void {
+  for (const attribute of ["value-type", "value", "currency", "date-value"]) cell.removeAttributeNS(NS.office, attribute);
+  cell.removeAttributeNS(NS.table, "formula");
+  while (cell.firstChild) cell.removeChild(cell.firstChild);
+}
+
+function setText(cell: XmlElement, value: string): void {
+  clearCellValue(cell);
+  cell.setAttributeNS(NS.office, "office:value-type", "string");
+  const document = cell.ownerDocument;
+  if (!document) throw new Error("ODS原本のXML文書を参照できません。");
+  const paragraph = document.createElementNS(NS.text, "text:p");
+  paragraph.appendChild(document.createTextNode(value));
+  cell.appendChild(paragraph);
+}
+
+function setNumber(cell: XmlElement, value: number, currency = false): void {
+  clearCellValue(cell);
+  cell.setAttributeNS(NS.office, "office:value-type", currency ? "currency" : "float");
+  cell.setAttributeNS(NS.office, "office:value", String(value));
+  if (currency) cell.setAttributeNS(NS.office, "office:currency", "JPY");
+  const document = cell.ownerDocument;
+  if (!document) throw new Error("ODS原本のXML文書を参照できません。");
+  const paragraph = document.createElementNS(NS.text, "text:p");
+  paragraph.appendChild(document.createTextNode(currency ? `¥${value.toLocaleString("ja-JP")}` : String(value)));
+  cell.appendChild(paragraph);
+}
+
+function populateSheet(table: XmlElement, state: AppState, page: ExpenseLine[], pageIndex: number, pageCount: number): void {
+  table.setAttributeNS(NS.table, "table:name", `出張旅費精算_${pageIndex + 1}`);
+  setText(cellAt(table, 1, 3), state.profile.department);
+  setText(cellAt(table, 1, 7), `（　${pageIndex + 1}　）枚目/（　${pageCount}　）枚中`);
+  setText(cellAt(table, 3, 1), `${Number(state.selectedMonth.slice(5, 7))}月度　出張旅費代精算書（電車・バス用）`);
+  setText(cellAt(table, 5, 1), `氏名　${state.profile.employeeName}`);
+
+  for (let index = 0; index < 20; index += 1) {
+    const row = 11 + index;
+    for (const column of [1, 2, 3, 4, 6, 7]) clearCellValue(cellAt(table, row, column));
+    const line = page[index];
+    if (!line) continue;
+    setNumber(cellAt(table, row, 1), Number(line.date.slice(5, 7)));
+    setNumber(cellAt(table, row, 2), Number(line.date.slice(8, 10)));
+    setText(cellAt(table, row, 3), line.destination);
+    setText(cellAt(table, row, 4), line.paidSection);
+    setNumber(cellAt(table, row, 6), line.claimAmount, true);
+    setText(cellAt(table, row, 7), line.reason);
+  }
+
+  const total = page.reduce((sum, line) => sum + line.claimAmount, 0);
+  const totalCell = cellAt(table, 31, 6);
+  setNumber(totalCell, total, true);
+  totalCell.setAttributeNS(NS.table, "table:formula", "of:=SUM([.F11:.F30])");
+}
+
+export function createOdsFromTemplate(template: ArrayBuffer, state: AppState, lines: ExpenseLine[]): Blob {
+  const archive = unzipSync(new Uint8Array(template));
+  const content = archive["content.xml"];
+  if (!content) throw new Error("ODS原本にcontent.xmlがありません。");
+  const document = new DOMParser().parseFromString(decoder.decode(content), "application/xml");
+  const tables = Array.from(document.getElementsByTagNameNS(NS.table, "table"));
+  const source = tables.find((table) => table.getAttributeNS(NS.table, "name") === TEMPLATE_SHEET);
+  if (!source || !source.parentNode) throw new Error(`ODS原本に「${TEMPLATE_SHEET}」シートがありません。`);
+  if (cellAt(source, 31, 6).getAttributeNS(NS.table, "formula") !== "of:=SUM([.F11:.F30])") throw new Error("ODS原本のF31合計式が異なります。");
+
   const pages = copyPages(lines);
-  const tables = (pages.length ? pages : [[]]).map((page, pageIndex) => {
-    const rows = Array.from({ length: 20 }, (_, index) => {
-      const line = page[index];
-      if (!line) return `<table:table-row>${Array.from({ length: 6 }, () => textCell("")).join("")}</table:table-row>`;
-      return `<table:table-row>${numberCell(Number(line.date.slice(5, 7)))}${numberCell(Number(line.date.slice(8, 10)))}${textCell(line.destination)}${textCell(line.paidSection)}${numberCell(line.claimAmount, "money")}${textCell(line.reason)}</table:table-row>`;
-    }).join("");
-    return `<table:table table:name="出張旅費精算_${pageIndex + 1}">
-      <table:table-column table:number-columns-repeated="6"/>
-      <table:table-row><table:table-cell table:style-name="title" table:number-columns-spanned="6" office:value-type="string"><text:p>${xml(Number(state.selectedMonth.slice(5)))}月度 出張旅費精算書</text:p></table:table-cell><table:covered-table-cell table:number-columns-repeated="5"/></table:table-row>
-      <table:table-row>${textCell(`所属：${state.profile.department}`)}${textCell(`氏名：${state.profile.employeeName}`)}<table:table-cell table:number-columns-repeated="4"/></table:table-row>
-      <table:table-row>${textCell(`（ ${pageIndex + 1} ）枚目／（ ${Math.max(1, pages.length)} ）枚中`)}<table:table-cell table:number-columns-repeated="5"/></table:table-row>
-      <table:table-row>${["月", "日", "目的地", "区間", "金額", "理由"].map((label) => textCell(label, "header")).join("")}</table:table-row>
-      ${rows}
-      <table:table-row>${textCell("合計", "header")}<table:table-cell table:number-columns-repeated="3"/><table:table-cell table:style-name="money" office:value-type="float" table:formula="of:=SUM([.E5:.E24])"><text:p>${page.reduce((sum, line) => sum + line.claimAmount, 0)}</text:p></table:table-cell>${textCell("")}</table:table-row>
-    </table:table>`;
-  }).join("");
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" office:version="1.3">
-<office:automatic-styles>
-  <style:style style:name="cell" style:family="table-cell"><style:table-cell-properties fo:border="0.5pt solid #777777" fo:padding="0.08in" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"/></style:style>
-  <style:style style:name="header" style:family="table-cell" style:parent-style-name="cell"><style:text-properties fo:font-weight="bold" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"/></style:style>
-  <style:style style:name="title" style:family="table-cell"><style:text-properties fo:font-size="16pt" fo:font-weight="bold" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"/></style:style>
-  <style:style style:name="money" style:family="table-cell" style:parent-style-name="cell"/>
-</office:automatic-styles><office:body><office:spreadsheet>${tables}</office:spreadsheet></office:body></office:document-content>`;
-}
-
-export function createOds(state: AppState, lines: ExpenseLine[]): Blob {
-  const mimetype = "application/vnd.oasis.opendocument.spreadsheet";
-  const files = [
-    { name: "mimetype", data: encoder.encode(mimetype) },
-    { name: "content.xml", data: encoder.encode(contentXml(state, lines)) },
-    { name: "styles.xml", data: encoder.encode(`<?xml version="1.0" encoding="UTF-8"?><office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" office:version="1.3"><office:styles/></office:document-styles>`) },
-    { name: "meta.xml", data: encoder.encode(`<?xml version="1.0" encoding="UTF-8"?><office:document-meta xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" office:version="1.3"><office:meta/></office:document-meta>`) },
-    { name: "META-INF/manifest.xml", data: encoder.encode(`<?xml version="1.0" encoding="UTF-8"?><manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.3"><manifest:file-entry manifest:full-path="/" manifest:media-type="${mimetype}"/><manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/><manifest:file-entry manifest:full-path="styles.xml" manifest:media-type="text/xml"/><manifest:file-entry manifest:full-path="meta.xml" manifest:media-type="text/xml"/></manifest:manifest>`) },
-  ];
-  return new Blob([zipStore(files) as BlobPart], { type: mimetype });
+  const parent = source.parentNode;
+  for (const table of tables) parent.removeChild(table);
+  pages.forEach((page, pageIndex) => {
+    const sheet = source.cloneNode(true) as XmlElement;
+    populateSheet(sheet, state, page, pageIndex, pages.length);
+    parent.appendChild(sheet);
+  });
+  archive["content.xml"] = encoder.encode(new XMLSerializer().serializeToString(document));
+  const orderedFiles = Object.entries(archive).sort(([left], [right]) => left === "mimetype" ? -1 : right === "mimetype" ? 1 : left.localeCompare(right));
+  return new Blob([zipStore(orderedFiles.map(([name, data]) => ({ name, data }))) as BlobPart], { type: "application/vnd.oasis.opendocument.spreadsheet" });
 }
 
 export function parseOdsTableRows(buffer: ArrayBuffer): unknown[][] {
   const archive = unzipSync(new Uint8Array(buffer));
   const content = archive["content.xml"];
   if (!content) throw new Error("ODSにcontent.xmlがありません。");
-  const document = new DOMParser().parseFromString(new TextDecoder().decode(content), "application/xml");
-  if (document.querySelector("parsererror")) throw new Error("ODSのXMLを解析できません。");
+  const document = new DOMParser().parseFromString(decoder.decode(content), "application/xml");
   return [...document.getElementsByTagName("table:table-row")].map((row) => {
     const values: unknown[] = [];
-    for (const cell of [...row.children]) {
+    for (const cell of elementChildren(row)) {
       if (!["table:table-cell", "table:covered-table-cell"].includes(cell.tagName)) continue;
       const repeated = Math.min(20, Math.max(1, Number(cell.getAttribute("table:number-columns-repeated")) || 1));
       const raw = cell.getAttribute("office:value") ?? cell.textContent?.trim() ?? "";

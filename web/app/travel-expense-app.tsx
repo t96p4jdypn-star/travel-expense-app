@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { loadState, saveState } from "./lib/db";
 import { buildDayRoute, copyPages, duplicateKeys, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, parseTextSchedules, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated, uid, yen } from "./lib/domain";
 import { createExcel } from "./lib/excel";
-import { createOds, parseOdsTableRows } from "./lib/ods";
+import { createOdsFromTemplate, parseOdsTableRows } from "./lib/ods";
 import { EMPTY_STATE, normalizeState, type AppState, type ClaimMaster, type CommuterPass, type ExpenseLine, type ScheduleCapture, type ScheduleItem } from "./lib/types";
 
 type Tab = "入力" | "実績マスター" | "ODS出力" | "実績から作成" | "過去データ読込" | "月間" | "予定取込" | "経路確認" | "登録状況" | "コピー出力" | "Excel出力" | "設定";
@@ -291,13 +291,23 @@ function ClaimMasterView({ state, mutate, setNotice }: { state: AppState; mutate
 }
 
 function OdsView({ state, lines, total, setNotice }: { state: AppState; lines: ExpenseLine[]; total: number; setNotice: (value: string) => void }) {
-  function generate() {
-    download(createOds(state, lines), `${state.selectedMonth.replace("-", "")}_出張旅費精算書.ods`);
-    setNotice("ODSファイルを作成しました。LibreOfficeで内容と印刷結果を確認してください。");
+  const [busy, setBusy] = useState(false);
+  async function generate() {
+    setBusy(true);
+    try {
+      const response = await fetch("/2026年度版出張旅費代精算書原本.ods");
+      if (!response.ok) throw new Error("ODS原本を読み込めません。");
+      download(createOdsFromTemplate(await response.arrayBuffer(), state, lines), `${state.selectedMonth.replace("-", "")}_出張旅費精算書.ods`);
+      setNotice("現行社内フォーマットのODSを作成しました。LibreOfficeで内容と印刷結果を確認してください。");
+    } catch {
+      setNotice("ODS申請書を作成できませんでした。入力データは失われていません。");
+    } finally {
+      setBusy(false);
+    }
   }
   return <section className="panel"><div className="panel-heading"><div><span className="eyebrow">ver3 ODS出力</span><h2>出張旅費精算書を作成</h2><p>空白行と0円行を除き、20件ごとにシートを分けます。</p></div><div className="summary-card"><span>出力対象</span><strong>{yen(total)}</strong><small>{lines.length}行・{Math.max(1, Math.ceil(lines.length / 20))}枚</small></div></div>
     {!state.profile.department || !state.profile.employeeName ? <div className="warning">設定画面で所属と氏名を登録してください。</div> : null}
-    <div className="ods-summary"><p>ファイル名</p><strong>{state.selectedMonth.replace("-", "")}_出張旅費精算書.ods</strong><span>合計はODS内の計算式で算出します。現行社内原本との完全な書式一致は、原本ファイル確認後に調整します。</span><button className="primary large" disabled={!lines.length || !state.profile.department || !state.profile.employeeName} onClick={generate}>ODS申請書を作成</button></div>
+    <div className="ods-summary"><p>ファイル名</p><strong>{state.selectedMonth.replace("-", "")}_出張旅費精算書.ods</strong><span>現行社内原本の書式、罫線、結合セル、注意書き、印刷設定を維持します。合計はODS内の計算式で算出します。</span><button className="primary large" disabled={busy || !lines.length || !state.profile.department || !state.profile.employeeName} onClick={generate}>{busy ? "作成中…" : "ODS申請書を作成"}</button></div>
   </section>;
 }
 

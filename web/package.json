@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@tesseract.js-data/jpn": "^1.0.0",
+    "@xmldom/xmldom": "^0.9.10",
     "dexie": "^4.4.4",
     "drizzle-orm": "0.45.2",
     "exceljs": "^4.4.0",

@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildDayRoute, copyPages, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated } from "../app/lib/domain";
 import { EMPTY_STATE, normalizeState, type AppState, type ExpenseLine, type ScheduleItem } from "../app/lib/types";
-import { createOds } from "../app/lib/ods";
+import { readFile } from "node:fs/promises";
+import { createOdsFromTemplate } from "../app/lib/ods";
+import { unzipSync } from "fflate";
 
 const expense = (id: string, patch: Partial<ExpenseLine> = {}): ExpenseLine => ({
   id, date: "2026-07-15", startTime: "09:00", destination: "浦和高校", origin: "池袋", arrival: "浦和",
@@ -126,12 +128,16 @@ test("ODSは20行単位のシートと合計計算式を持つ", async () => {
   value.profile.department = "営業部";
   value.profile.employeeName = "山田 太郎";
   const lines = Array.from({ length: 21 }, (_, index) => expense(String(index), { date: `2026-07-${String((index % 28) + 1).padStart(2, "0")}` }));
-  const blob = createOds(value, lines);
+  const template = await readFile(new URL("../public/2026年度版出張旅費代精算書原本.ods", import.meta.url));
+  const blob = createOdsFromTemplate(template.buffer.slice(template.byteOffset, template.byteOffset + template.byteLength), value, lines);
   const binary = new Uint8Array(await blob.arrayBuffer());
-  const storedText = new TextDecoder().decode(binary);
+  const storedText = new TextDecoder().decode(unzipSync(binary)["content.xml"]);
   assert.equal(blob.type, "application/vnd.oasis.opendocument.spreadsheet");
   assert.equal(String.fromCharCode(...binary.slice(0, 2)), "PK");
   assert.match(storedText, /出張旅費精算_1/);
   assert.match(storedText, /出張旅費精算_2/);
-  assert.match(storedText, /table:formula="of:=SUM\(\[\.E5:\.E24\]\)"/);
+  assert.doesNotMatch(storedText, /【見本】出張旅費精算/);
+  assert.match(storedText, /table:formula="of:=SUM\(\[\.F11:\.F30\]\)"/);
+  assert.match(storedText, /営業部/);
+  assert.match(storedText, /山田 太郎/);
 });

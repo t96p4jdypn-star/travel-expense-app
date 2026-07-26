@@ -51,4 +51,5 @@ test("公開物にPWA定義と端末内OCRモデルを同梱する", async () =>
   assert.match(app, /スクリーンショットを貼り付け/);
   assert.match(app, /試験機能：画像・PDFから予定を読み取る/);
   await access(new URL("../public/tessdata/jpn.traineddata.gz", import.meta.url));
+  await access(new URL("../public/2026年度版出張旅費代精算書原本.ods", import.meta.url));
 });
