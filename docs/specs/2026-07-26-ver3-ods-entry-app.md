@@ -202,3 +202,4 @@
 - 出力ODSと原本の `styles.xml`、`settings.xml`、`META-INF/manifest.xml` が同一であることをSHA-256で確認。
 - 検証環境に原本指定のMSゴシックがないため、PDF上の日本語字形表示は確認できなかった。セル内の日本語文字列と配置はXMLで確認済み。Windows／LibreOfficeでの最終字形・印刷プレビュー確認は継続。
 - 保存フォルダ再利用、同名ファイル上書き確認は未実施。
+- ODS原本対応の実装commitは `0a519e0`。GitHubの `main` へpush済み。Sites Version 7を保存済みで、本番公開は承認待ち。
