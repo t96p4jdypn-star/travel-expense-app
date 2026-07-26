@@ -46,6 +46,31 @@ export const EMPTY_STATE: AppState = {
   commuterPasses: [], places: [], schedules: [], expenses: [], history: [], fareRules: [], captures: [], claimMasters: [], claimImports: [], lastSavedAt: new Date().toISOString(),
 };
 
+const INITIAL_CLAIM_MASTER_VALUES = [
+  { destination: "本社", origin: "武蔵浦和", arrival: "北与野", paidSection: "武蔵浦和→北与野", icFare: 199, reason: "本社業務" },
+  { destination: "南越谷", origin: "北与野", arrival: "武蔵浦和", paidSection: "北与野→武蔵浦和", icFare: 199, reason: "教室管理" },
+  { destination: "越谷レイクタウン", origin: "北与野", arrival: "武蔵浦和", paidSection: "北与野→武蔵浦和", icFare: 199, reason: "教室管理" },
+  { destination: "川越教室", origin: "ふじみ野", arrival: "川越", paidSection: "ふじみ野→川越", icFare: 178, reason: "巡回" },
+  { destination: "本社", origin: "川越", arrival: "北与野", paidSection: "川越→北与野", icFare: 341, reason: "本社業務" },
+  { destination: "自宅", origin: "北与野", arrival: "武蔵浦和", paidSection: "北与野→武蔵浦和", icFare: 199, reason: "帰宅" },
+] as const;
+
+export function createInitialState(registeredDate = new Date().toISOString().slice(0, 10)): AppState {
+  const initial = structuredClone(EMPTY_STATE);
+  initial.claimMasters = INITIAL_CLAIM_MASTER_VALUES.map((master) => ({
+    id: crypto.randomUUID(),
+    ...master,
+    useCount: 1,
+    lastUsedDate: registeredDate,
+    sourceName: "初期実績",
+  }));
+  return initial;
+}
+
+export function resolveStartupState(saved: AppState | null, registeredDate?: string): AppState {
+  return saved ?? createInitialState(registeredDate);
+}
+
 export function safeAmount(value: unknown): number {
   const amount = typeof value === "string" && value.trim() === "" ? 0 : Number(value);
   return Number.isFinite(amount) && amount >= 0 ? amount : 0;

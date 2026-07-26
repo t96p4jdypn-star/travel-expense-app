@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildDayRoute, copyPages, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated } from "../app/lib/domain";
-import { EMPTY_STATE, normalizeState, safeAmount, type AppState, type ExpenseLine, type ScheduleItem } from "../app/lib/types";
+import { createInitialState, EMPTY_STATE, normalizeState, resolveStartupState, safeAmount, type AppState, type ExpenseLine, type ScheduleItem } from "../app/lib/types";
 import { readFile } from "node:fs/promises";
 import { createOdsFromTemplate, parseOdsTableRows } from "../app/lib/ods";
 import { unzipSync, zipSync } from "fflate";
@@ -13,6 +13,32 @@ const expense = (id: string, patch: Partial<ExpenseLine> = {}): ExpenseLine => (
 });
 
 const state = (): AppState => structuredClone({ ...EMPTY_STATE, selectedMonth: "2026-07" });
+
+test("新規環境は入力明細を作らず、初期実績6件だけを候補用に登録する", () => {
+  const value = createInitialState("2026-07-26");
+  assert.equal(value.expenses.length, 0);
+  assert.deepEqual(value.claimMasters.map(({ destination, paidSection, icFare, reason }) => ({ destination, paidSection, icFare, reason })), [
+    { destination: "本社", paidSection: "武蔵浦和→北与野", icFare: 199, reason: "本社業務" },
+    { destination: "南越谷", paidSection: "北与野→武蔵浦和", icFare: 199, reason: "教室管理" },
+    { destination: "越谷レイクタウン", paidSection: "北与野→武蔵浦和", icFare: 199, reason: "教室管理" },
+    { destination: "川越教室", paidSection: "ふじみ野→川越", icFare: 178, reason: "巡回" },
+    { destination: "本社", paidSection: "川越→北与野", icFare: 341, reason: "本社業務" },
+    { destination: "自宅", paidSection: "北与野→武蔵浦和", icFare: 199, reason: "帰宅" },
+  ]);
+  assert.ok(value.claimMasters.every((master) => master.useCount === 1 && master.lastUsedDate === "2026-07-26" && master.sourceName === "初期実績"));
+});
+
+test("保存済み実績は空の場合も含めて初期実績で追加・上書きしない", () => {
+  const existing = state();
+  existing.claimMasters = [{ id: "existing", destination: "既存訪問先", origin: "A", arrival: "B", paidSection: "A→B", icFare: 500, reason: "既存理由", useCount: 4, lastUsedDate: "2026-07-20", sourceName: "既存データ" }];
+  assert.equal(resolveStartupState(existing), existing);
+  assert.deepEqual(resolveStartupState(existing).claimMasters, existing.claimMasters);
+
+  const existingEmpty = state();
+  existingEmpty.claimMasters = [];
+  assert.equal(resolveStartupState(existingEmpty), existingEmpty);
+  assert.deepEqual(resolveStartupState(existingEmpty).claimMasters, []);
+});
 
 test("出力対象は確認済み・1円以上だけになる", () => {
   const value = state();

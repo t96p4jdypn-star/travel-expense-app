@@ -5,7 +5,7 @@ import { loadState, saveState } from "./lib/db";
 import { buildDayRoute, copyPages, duplicateKeys, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, parseTextSchedules, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated, uid, yen } from "./lib/domain";
 import { createExcel } from "./lib/excel";
 import { createOdsFromTemplate, parseOdsTableRows } from "./lib/ods";
-import { EMPTY_STATE, normalizeState, safeAmount, type AppState, type ClaimMaster, type CommuterPass, type ExpenseLine, type ScheduleCapture, type ScheduleItem } from "./lib/types";
+import { EMPTY_STATE, normalizeState, resolveStartupState, safeAmount, type AppState, type ClaimMaster, type CommuterPass, type ExpenseLine, type ScheduleCapture, type ScheduleItem } from "./lib/types";
 
 type Tab = "入力" | "実績マスター" | "ODS出力" | "実績から作成" | "過去データ読込" | "月間" | "予定取込" | "経路確認" | "登録状況" | "コピー出力" | "Excel出力" | "設定";
 type MainTab = "旅費入力" | "設定";
@@ -37,7 +37,7 @@ export function TravelExpenseApp() {
   const [notice, setNotice] = useState("データはこの端末内だけに保存されます");
   const [submissionDate, setSubmissionDate] = useState(new Date().toISOString().slice(0, 10));
 
-  useEffect(() => { loadState().then((saved) => { if (saved) setState(saved); setReady(true); }); }, []);
+  useEffect(() => { loadState().then((saved) => { setState(resolveStartupState(saved)); setReady(true); }); }, []);
   useEffect(() => { if (!ready) return; const timer = setTimeout(() => saveState({ ...state, lastSavedAt: new Date().toISOString() }), 250); return () => clearTimeout(timer); }, [state, ready]);
 
   const monthExpenses = useMemo(() => state.expenses.filter((line) => line.date.startsWith(state.selectedMonth)), [state]);
@@ -166,9 +166,9 @@ export function TravelExpenseApp() {
 
 const TABLE_FIELDS = ["date", "destination", "paidSection", "icFare", "reason"] as const;
 
-function emptyExpense(month: string, day = "01"): ExpenseLine {
+function emptyExpense(month: string, day = ""): ExpenseLine {
   return {
-    id: uid(), date: `${month}-${day}`, startTime: "09:00", destination: "", origin: "", arrival: "",
+    id: uid(), date: day ? `${month}-${day}` : `${month}-`, startTime: "09:00", destination: "", origin: "", arrival: "",
     paidSection: "", icFare: 0, claimAmount: 0, reason: "", state: "未確認", routeOrder: 0,
     duplicateWarning: false, passCovered: false, hiddenZero: true, createdAt: new Date().toISOString(),
   };
@@ -376,7 +376,9 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
         const candidates = candidateRowId === line.id ? matchingMasters(line.destination) : [];
         return <div className={`entry-row ${line.state === "確認済み" ? "complete" : ""}`} key={line.id}>
         <input data-entry={`${rowIndex}-0`} aria-label={`${rowIndex + 1}行目 日`} inputMode="numeric" value={Number(line.date.slice(8, 10)) || ""} onChange={(event) => {
-          const day = Math.min(31, Math.max(1, Number(event.target.value) || 1)); updateRow(line.id, { date: `${state.selectedMonth}-${String(day).padStart(2, "0")}`, state: "未確認" });
+          const input = event.target.value.trim();
+          const date = input ? `${state.selectedMonth}-${String(Math.min(31, Math.max(1, Number(input) || 1))).padStart(2, "0")}` : `${state.selectedMonth}-`;
+          updateRow(line.id, { date, state: "未確認" });
         }} onFocus={(event) => event.currentTarget.select()} onKeyDown={(event) => handleEnter(event, line, rowIndex, 0)} />
         <div className="destination-cell">
           <input data-entry={`${rowIndex}-1`} role="combobox" aria-autocomplete="list" aria-label={`${rowIndex + 1}行目 目的地`} aria-expanded={candidateRowId === line.id && candidates.length > 0} aria-controls={`candidate-list-${line.id}`} value={line.destination} onFocus={() => {
@@ -406,7 +408,7 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
       })}
     </div>
     <button className="secondary add-entry-row" onClick={() => mutate((draft) => {
-      const last = rows.at(-1); return { ...draft, expenses: [...draft.expenses, emptyExpense(draft.selectedMonth, last?.date.slice(8, 10) || "01")] };
+      const last = rows.at(-1); return { ...draft, expenses: [...draft.expenses, emptyExpense(draft.selectedMonth, last?.date.slice(8, 10) || "")] };
     })}>＋ 行を追加</button>
   </section>;
 }
