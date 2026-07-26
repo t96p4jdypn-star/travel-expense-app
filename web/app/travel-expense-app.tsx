@@ -5,7 +5,7 @@ import { loadState, saveState } from "./lib/db";
 import { buildDayRoute, copyPages, duplicateKeys, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, parseTextSchedules, prepareClaimRowsForRegistration, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated, uid, yen, type ClaimImportPreviewRow } from "./lib/domain";
 import { createExcel } from "./lib/excel";
 import { createOdsFromTemplate, parseOdsTableRows } from "./lib/ods";
-import { EMPTY_STATE, normalizeState, resolveStartupState, safeAmount, type AppState, type ClaimMaster, type CommuterPass, type ExpenseLine, type ScheduleCapture, type ScheduleItem } from "./lib/types";
+import { EMPTY_STATE, normalizeNumericText, normalizeState, resolveStartupState, safeAmount, type AppState, type ClaimMaster, type CommuterPass, type ExpenseLine, type ScheduleCapture, type ScheduleItem } from "./lib/types";
 
 type Tab = "入力" | "実績マスター" | "ODS出力" | "実績から作成" | "過去データ読込" | "月間" | "予定取込" | "経路確認" | "登録状況" | "コピー出力" | "Excel出力" | "設定";
 type MainTab = "旅費入力" | "設定";
@@ -36,9 +36,12 @@ export function TravelExpenseApp() {
   const [showZero, setShowZero] = useState(false);
   const [notice, setNotice] = useState("データはこの端末内だけに保存されます");
   const [submissionDate, setSubmissionDate] = useState(new Date().toISOString().slice(0, 10));
+  const [monthEditorOpen, setMonthEditorOpen] = useState(false);
+  const [pendingMonth, setPendingMonth] = useState(EMPTY_STATE.selectedMonth);
 
   useEffect(() => { loadState().then((saved) => { setState(resolveStartupState(saved)); setReady(true); }); }, []);
   useEffect(() => { if (!ready) return; const timer = setTimeout(() => saveState({ ...state, lastSavedAt: new Date().toISOString() }), 250); return () => clearTimeout(timer); }, [state, ready]);
+  useEffect(() => { setPendingMonth(state.selectedMonth); }, [state.selectedMonth]);
 
   const monthExpenses = useMemo(() => state.expenses.filter((line) => line.date.startsWith(state.selectedMonth)), [state]);
   const visibleExpenses = useMemo(() => monthExpenses.filter((line) => showZero || line.claimAmount > 0 || line.state === "未確認"), [monthExpenses, showZero]);
@@ -144,7 +147,24 @@ export function TravelExpenseApp() {
     <nav className="tabs" aria-label="主な機能">{MAIN_TABS.map((name) => <button key={name} className={mainTab === name ? "active" : ""} onClick={() => setMainTab(name)}>{name}</button>)}</nav>
     <main>
       {mainTab === "旅費入力" && <section className="month-strip">
-        <div><span className="eyebrow">対象月</span><input aria-label="対象月" type="month" value={state.selectedMonth} onChange={(e) => mutate((d) => ({ ...d, selectedMonth: e.target.value }))} /></div>
+        <div className="month-title">
+          <span className="eyebrow">申請対象月</span>
+          <h2>{Number(state.selectedMonth.slice(0, 4))}年{Number(state.selectedMonth.slice(5, 7))}月 出張旅費入力</h2>
+          <button className="month-change-button" onClick={() => setMonthEditorOpen((current) => !current)}>{monthEditorOpen ? "月変更を閉じる" : "対象月を変更"}</button>
+          {monthEditorOpen && <div className="month-editor">
+            <input aria-label="変更する対象月" type="month" value={pendingMonth} onInput={(event) => setPendingMonth(event.currentTarget.value)} onChange={(event) => setPendingMonth(event.target.value)} />
+            <button disabled={!/^\d{4}-(0[1-9]|1[0-2])$/.test(pendingMonth)} onClick={() => {
+              if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(pendingMonth)) {
+                setNotice("対象月を選択してください。");
+                return;
+              }
+              mutate((draft) => ({ ...draft, selectedMonth: pendingMonth }));
+              setMonthEditorOpen(false);
+              setNotice(`${Number(pendingMonth.slice(0, 4))}年${Number(pendingMonth.slice(5, 7))}月へ切り替えました。`);
+            }}>この月を表示</button>
+            {!pendingMonth && <small>対象月を選択するまで変更は反映されません。</small>}
+          </div>}
+        </div>
         <div className="month-metrics"><div><strong>{monthExpenses.filter((line) => line.destination).length}</strong><span>入力件数</span></div><div><strong>{output.length}</strong><span>出力明細</span></div><div><strong>{yen(total)}</strong><span>申請合計</span></div></div>
       </section>}
       {notice && <div className="notice" role="status"><span>✓</span>{notice}<button aria-label="通知を閉じる" onClick={() => setNotice("")}>×</button></div>}
@@ -250,6 +270,7 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
   const pendingFocus = useRef<{ row: number; column: number } | null>(null);
   const [candidateRowId, setCandidateRowId] = useState("");
   const [candidateIndex, setCandidateIndex] = useState(-1);
+  const [entryDrafts, setEntryDrafts] = useState<Record<string, { day?: string; amount?: string }>>({});
 
   useEffect(() => {
     if (rows.length) return;
@@ -288,12 +309,52 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
     });
   }
 
+  function setEntryDraft(id: string, field: "day" | "amount", value: string) {
+    setEntryDrafts((current) => ({ ...current, [id]: { ...current[id], [field]: value } }));
+  }
+
+  function clearEntryDraft(id: string, field: "day" | "amount") {
+    setEntryDrafts((current) => {
+      if (current[id]?.[field] === undefined) return current;
+      const next = { ...current, [id]: { ...current[id] } };
+      delete next[id][field];
+      if (next[id].day === undefined && next[id].amount === undefined) delete next[id];
+      return next;
+    });
+  }
+
+  function commitDay(line: ExpenseLine): boolean {
+    const draft = entryDrafts[line.id]?.day;
+    if (draft === undefined) return true;
+    const normalized = normalizeNumericText(draft);
+    if (normalized && !/^\d{1,2}$/.test(normalized)) {
+      setNotice("日は1～31の数字で入力してください。");
+      return false;
+    }
+    const day = normalized ? Number(normalized) : 0;
+    if (day > 31) {
+      setNotice("日は1～31の数字で入力してください。");
+      return false;
+    }
+    updateRow(line.id, { date: day ? `${state.selectedMonth}-${String(day).padStart(2, "0")}` : `${state.selectedMonth}-`, state: "未確認" });
+    clearEntryDraft(line.id, "day");
+    return true;
+  }
+
+  function commitAmount(line: ExpenseLine) {
+    const draft = entryDrafts[line.id]?.amount;
+    if (draft === undefined) return;
+    updateRow(line.id, { icFare: safeAmount(draft), state: "未確認" });
+    clearEntryDraft(line.id, "amount");
+  }
+
   function applyMaster(id: string, master: ClaimMaster) {
     const stations = stationsFromSection(master.paidSection);
     updateRow(id, {
       destination: master.destination, paidSection: master.paidSection, icFare: master.icFare,
       claimAmount: master.icFare, reason: master.reason, origin: stations.origin, arrival: stations.arrival, state: "未確認",
     });
+    clearEntryDraft(id, "amount");
     setCandidateRowId("");
     setCandidateIndex(-1);
   }
@@ -375,21 +436,22 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
       {rows.map((line, rowIndex) => {
         const candidates = candidateRowId === line.id ? matchingMasters(line.destination) : [];
         return <div className={`entry-row ${line.state === "確認済み" ? "complete" : ""}`} key={line.id}>
-        <input data-entry={`${rowIndex}-0`} aria-label={`${rowIndex + 1}行目 日`} inputMode="numeric" value={Number(line.date.slice(8, 10)) || ""} onChange={(event) => {
-          const input = event.target.value.trim();
-          const date = input ? `${state.selectedMonth}-${String(Math.min(31, Math.max(1, Number(input) || 1))).padStart(2, "0")}` : `${state.selectedMonth}-`;
-          updateRow(line.id, { date, state: "未確認" });
-        }} onFocus={(event) => event.currentTarget.select()} onKeyDown={(event) => handleEnter(event, line, rowIndex, 0)} />
+        <input data-entry={`${rowIndex}-0`} aria-label={`${rowIndex + 1}行目 日`} inputMode="numeric" value={entryDrafts[line.id]?.day ?? (Number(line.date.slice(8, 10)) || "")} onChange={(event) => {
+          setEntryDraft(line.id, "day", event.target.value);
+        }} onBlur={() => { commitDay(line); }} onFocus={(event) => event.currentTarget.select()} onKeyDown={(event) => {
+          if (event.key !== "Enter") return;
+          event.preventDefault();
+          if (commitDay(line)) focusCell(rowIndex, 1);
+        }} />
         <div className="destination-cell">
           <input data-entry={`${rowIndex}-1`} role="combobox" aria-autocomplete="list" aria-label={`${rowIndex + 1}行目 目的地`} aria-expanded={candidateRowId === line.id && candidates.length > 0} aria-controls={`candidate-list-${line.id}`} value={line.destination} onFocus={() => {
-            const nextCandidates = matchingMasters(line.destination);
             setCandidateRowId(line.id);
-            setCandidateIndex(nextCandidates.length === 1 ? 0 : -1);
+            setCandidateIndex(-1);
           }} onChange={(event) => {
             const value = event.target.value;
             updateRow(line.id, { destination: value, state: "未確認" });
             setCandidateRowId(line.id);
-            setCandidateIndex(matchingMasters(value).length === 1 ? 0 : -1);
+            setCandidateIndex(-1);
           }} onKeyDown={(event) => handleDestinationKey(event, line, rowIndex)} />
           {candidates.length > 0 && <div className="candidate-list" id={`candidate-list-${line.id}`} role="listbox">
             {candidates.map((master, index) => <button type="button" role="option" aria-selected={candidateIndex === index} className={candidateIndex === index ? "selected" : ""} key={master.id} onMouseDown={(event) => event.preventDefault()} onClick={() => {
@@ -401,7 +463,12 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
           </div>}
         </div>
         <input data-entry={`${rowIndex}-2`} aria-label={`${rowIndex + 1}行目 区間`} value={line.paidSection} onChange={(event) => updateRow(line.id, { paidSection: event.target.value, state: "未確認" })} onKeyDown={(event) => handleEnter(event, line, rowIndex, 2)} />
-        <input data-entry={`${rowIndex}-3`} aria-label={`${rowIndex + 1}行目 金額`} inputMode="numeric" value={safeAmount(line.icFare) || ""} onFocus={(event) => event.currentTarget.select()} onChange={(event) => updateRow(line.id, { icFare: safeAmount(event.target.value), state: "未確認" })} onKeyDown={(event) => handleEnter(event, line, rowIndex, 3)} />
+        <input data-entry={`${rowIndex}-3`} aria-label={`${rowIndex + 1}行目 金額`} inputMode="numeric" value={entryDrafts[line.id]?.amount ?? (safeAmount(line.icFare) || "")} onFocus={(event) => event.currentTarget.select()} onChange={(event) => setEntryDraft(line.id, "amount", event.target.value)} onBlur={() => { commitAmount(line); }} onKeyDown={(event) => {
+          if (event.key !== "Enter") return;
+          event.preventDefault();
+          commitAmount(line);
+          focusCell(rowIndex, 4);
+        }} />
         <input data-entry={`${rowIndex}-4`} aria-label={`${rowIndex + 1}行目 理由`} value={line.reason} onChange={(event) => updateRow(line.id, { reason: event.target.value, state: "未確認" })} onKeyDown={(event) => handleEnter(event, line, rowIndex, 4)} />
         <button className="icon-button" aria-label={`${rowIndex + 1}行目を削除`} onClick={() => mutate((draft) => ({ ...draft, expenses: draft.expenses.filter((item) => item.id !== line.id) }))}>削除</button>
       </div>;
@@ -432,6 +499,7 @@ function ClaimMasterView({ state, mutate, setNotice }: { state: AppState; mutate
 
 function OdsView({ state, lines, total, setNotice }: { state: AppState; lines: ExpenseLine[]; total: number; setNotice: (value: string) => void }) {
   const [busy, setBusy] = useState(false);
+  const hasValidMonth = /^\d{4}-(0[1-9]|1[0-2])$/.test(state.selectedMonth);
   async function generate() {
     setBusy(true);
     try {
@@ -446,8 +514,9 @@ function OdsView({ state, lines, total, setNotice }: { state: AppState; lines: E
     }
   }
   return <section className="panel"><div className="panel-heading"><div><span className="eyebrow">ver3 ODS出力</span><h2>出張旅費精算書を作成</h2><p>空白行と0円行を除き、20件ごとにシートを分けます。</p></div><div className="summary-card"><span>出力対象</span><strong>{yen(total)}</strong><small>{lines.length}行・{Math.max(1, Math.ceil(lines.length / 20))}枚</small></div></div>
+    {!hasValidMonth ? <div className="warning">対象月を選択してください。対象月なしではODSを作成できません。</div> : null}
     {!state.profile.department || !state.profile.employeeName ? <div className="warning">設定画面で所属と氏名を登録してください。</div> : null}
-    <div className="ods-summary"><p>ファイル名</p><strong>{state.selectedMonth.replace("-", "")}_出張旅費精算書.ods</strong><span>現行社内原本の書式、罫線、結合セル、注意書き、印刷設定を維持します。合計はODS内の計算式で算出します。</span><button className="primary large" disabled={busy || !lines.length || !state.profile.department || !state.profile.employeeName} onClick={generate}>{busy ? "作成中…" : "ODS申請書を作成"}</button></div>
+    <div className="ods-summary"><p>ファイル名</p><strong>{hasValidMonth ? `${state.selectedMonth.replace("-", "")}_出張旅費精算書.ods` : "対象月を選択してください"}</strong><span>現行社内原本の書式、罫線、結合セル、注意書き、印刷設定を維持します。合計はODS内の計算式で算出します。</span><button className="primary large" disabled={busy || !hasValidMonth || !lines.length || !state.profile.department || !state.profile.employeeName} onClick={generate}>{busy ? "作成中…" : "ODS申請書を作成"}</button></div>
   </section>;
 }
 

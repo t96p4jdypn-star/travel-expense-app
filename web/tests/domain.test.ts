@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildDayRoute, copyPages, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, prepareClaimRowsForRegistration, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated } from "../app/lib/domain";
-import { createInitialState, EMPTY_STATE, normalizeState, resolveStartupState, safeAmount, type AppState, type ExpenseLine, type ScheduleItem } from "../app/lib/types";
+import { createInitialState, EMPTY_STATE, normalizeNumericText, normalizeState, resolveStartupState, safeAmount, type AppState, type ExpenseLine, type ScheduleItem } from "../app/lib/types";
 import { readFile } from "node:fs/promises";
 import { createOdsFromTemplate, parseOdsTableRows } from "../app/lib/ods";
 import { unzipSync, zipSync } from "fflate";
@@ -171,9 +171,18 @@ test("不正な金額は0円へ安全補正する", () => {
   assert.equal(safeAmount(Number.POSITIVE_INFINITY), 0);
   assert.equal(safeAmount("金額なし"), 0);
   assert.equal(safeAmount("199"), 199);
+  assert.equal(safeAmount("１９９"), 199);
+  assert.equal(safeAmount("１，２３４"), 1234);
+  assert.equal(normalizeNumericText("２５"), "25");
   const value = state();
   value.claimMasters = [{ id: "m", destination: "本社", origin: "武蔵浦和", arrival: "北与野", paidSection: "武蔵浦和→北与野", icFare: Number.NaN, reason: "本社業務", useCount: 1, lastUsedDate: "2026-07-01", sourceName: "旧データ" }];
   assert.equal(normalizeState(value).claimMasters[0].icFare, 0);
+});
+
+test("空または不正な対象月は現在月へ安全補正する", () => {
+  const value = state();
+  value.selectedMonth = "";
+  assert.match(normalizeState(value).selectedMonth, /^\d{4}-(0[1-9]|1[0-2])$/);
 });
 
 test("同じ過去実績は利用回数を集約し、別運賃は別候補にする", () => {

@@ -71,8 +71,13 @@ export function resolveStartupState(saved: AppState | null, registeredDate?: str
   return saved ?? createInitialState(registeredDate);
 }
 
+export function normalizeNumericText(value: unknown): string {
+  return String(value ?? "").normalize("NFKC").replace(/[,\s]/g, "");
+}
+
 export function safeAmount(value: unknown): number {
-  const amount = typeof value === "string" && value.trim() === "" ? 0 : Number(value);
+  const normalized = typeof value === "string" ? normalizeNumericText(value) : value;
+  const amount = normalized === "" ? 0 : Number(normalized);
   return Number.isFinite(amount) && amount >= 0 ? amount : 0;
 }
 
@@ -86,6 +91,7 @@ export function normalizeState(value: AppState): AppState {
   const normalized = {
     ...structuredClone(EMPTY_STATE), ...value,
     version: 2 as const,
+    selectedMonth: /^\d{4}-(0[1-9]|1[0-2])$/.test(value.selectedMonth ?? "") ? value.selectedMonth : EMPTY_STATE.selectedMonth,
     profile: { ...EMPTY_STATE.profile, ...(value.profile ?? {}) },
     workBases: value.workBases ?? [], dayRules: value.dayRules?.length ? value.dayRules : EMPTY_STATE.dayRules,
     commuterPasses: value.commuterPasses ?? [], places: value.places ?? [], schedules: value.schedules ?? [],
