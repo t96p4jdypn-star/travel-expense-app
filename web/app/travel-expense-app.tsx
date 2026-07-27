@@ -36,20 +36,41 @@ export function TravelExpenseApp() {
   const [showZero, setShowZero] = useState(false);
   const [notice, setNotice] = useState("データはこの端末内だけに保存されます");
   const [submissionDate, setSubmissionDate] = useState(new Date().toISOString().slice(0, 10));
-  const [monthEditorOpen, setMonthEditorOpen] = useState(false);
-  const [pendingMonth, setPendingMonth] = useState(EMPTY_STATE.selectedMonth);
+  const [requestedMonth, setRequestedMonth] = useState("");
 
   useEffect(() => { loadState().then((saved) => { setState(resolveStartupState(saved)); setReady(true); }); }, []);
   useEffect(() => { if (!ready) return; const timer = setTimeout(() => saveState({ ...state, lastSavedAt: new Date().toISOString() }), 250); return () => clearTimeout(timer); }, [state, ready]);
-  useEffect(() => { setPendingMonth(state.selectedMonth); }, [state.selectedMonth]);
 
   const monthExpenses = useMemo(() => state.expenses.filter((line) => line.date.startsWith(state.selectedMonth)), [state]);
+  const monthOptions = useMemo(() => {
+    const [year, month] = state.selectedMonth.split("-").map(Number);
+    return Array.from({ length: 25 }, (_, index) => {
+      const date = new Date(year, month - 1 + index - 12, 1);
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+    });
+  }, [state.selectedMonth]);
   const visibleExpenses = useMemo(() => monthExpenses.filter((line) => showZero || line.claimAmount > 0 || line.state === "未確認"), [monthExpenses, showZero]);
   const output = useMemo(() => outputLines(state), [state]);
   const total = output.reduce((sum, line) => sum + line.claimAmount, 0);
   const warnings = monthExpenses.filter((line) => line.duplicateWarning).length;
 
   function mutate(updater: (draft: AppState) => AppState) { setState((current) => updater(structuredClone(current))); }
+  function switchMonth(nextMonth: string) {
+    mutate((draft) => ({ ...draft, selectedMonth: nextMonth }));
+    setRequestedMonth("");
+    setNotice(`${Number(nextMonth.slice(0, 4))}年${Number(nextMonth.slice(5, 7))}月へ切り替えました。月別データは保持されています。`);
+  }
+  function requestMonthChange(nextMonth: string) {
+    if (nextMonth === state.selectedMonth) return;
+    const hasEnteredData = monthExpenses.some((line) =>
+      Boolean(line.destination.trim() || line.paidSection.trim() || line.reason.trim() || safeAmount(line.icFare) > 0)
+    );
+    if (hasEnteredData) {
+      setRequestedMonth(nextMonth);
+      return;
+    }
+    switchMonth(nextMonth);
+  }
   function recomputeDuplicates(draft: AppState) {
     const duplicates = duplicateKeys(draft.expenses);
     draft.expenses.forEach((line) => { line.duplicateWarning = duplicates.has(`${line.date}|${line.paidSection}|${line.claimAmount}`); });
@@ -148,21 +169,21 @@ export function TravelExpenseApp() {
     <main>
       {mainTab === "旅費入力" && <section className="month-strip">
         <div className="month-title">
-          <span className="eyebrow">申請対象月</span>
+          <span className="eyebrow">出張旅費入力</span>
           <h2>{Number(state.selectedMonth.slice(0, 4))}年{Number(state.selectedMonth.slice(5, 7))}月 出張旅費入力</h2>
-          <button className="month-change-button" onClick={() => setMonthEditorOpen((current) => !current)}>{monthEditorOpen ? "月変更を閉じる" : "対象月を変更"}</button>
-          {monthEditorOpen && <div className="month-editor">
-            <input aria-label="変更する対象月" type="month" value={pendingMonth} onInput={(event) => setPendingMonth(event.currentTarget.value)} onChange={(event) => setPendingMonth(event.target.value)} />
-            <button disabled={!/^\d{4}-(0[1-9]|1[0-2])$/.test(pendingMonth)} onClick={() => {
-              if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(pendingMonth)) {
-                setNotice("対象月を選択してください。");
-                return;
-              }
-              mutate((draft) => ({ ...draft, selectedMonth: pendingMonth }));
-              setMonthEditorOpen(false);
-              setNotice(`${Number(pendingMonth.slice(0, 4))}年${Number(pendingMonth.slice(5, 7))}月へ切り替えました。`);
-            }}>この月を表示</button>
-            {!pendingMonth && <small>対象月を選択するまで変更は反映されません。</small>}
+          <label className="month-select-field">
+            <span>対象月</span>
+            <select aria-label="対象月" value={state.selectedMonth} onChange={(event) => requestMonthChange(event.target.value)}>
+              {monthOptions.map((month) => <option key={month} value={month}>{Number(month.slice(0, 4))}年{Number(month.slice(5, 7))}月</option>)}
+            </select>
+          </label>
+          {requestedMonth && <div className="month-change-confirmation" role="alert">
+            <strong>入力済みデータがあります。対象月を変更しますか？</strong>
+            <span>{Number(requestedMonth.slice(0, 4))}年{Number(requestedMonth.slice(5, 7))}月へ切り替えます。現在の月のデータは削除されません。</span>
+            <div>
+              <button className="primary" onClick={() => switchMonth(requestedMonth)}>変更する</button>
+              <button className="secondary" onClick={() => setRequestedMonth("")}>キャンセル</button>
+            </div>
           </div>}
         </div>
         <div className="month-metrics"><div><strong>{monthExpenses.filter((line) => line.destination).length}</strong><span>入力件数</span></div><div><strong>{output.length}</strong><span>出力明細</span></div><div><strong>{yen(total)}</strong><span>申請合計</span></div></div>
