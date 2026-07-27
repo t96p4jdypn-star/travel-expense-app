@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildDayRoute, claimDestinationCandidates, claimRouteCandidates, copyPages, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, prepareClaimRowsForRegistration, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated } from "../app/lib/domain";
-import { createInitialState, EMPTY_STATE, normalizeNumericText, normalizeState, resolveStartupState, safeAmount, type AppState, type ExpenseLine, type ScheduleItem } from "../app/lib/types";
+import { createInitialState, EMPTY_STATE, normalizeNumericText, normalizeState, safeAmount, type AppState, type ExpenseLine, type ScheduleItem } from "../app/lib/types";
 import { readFile } from "node:fs/promises";
 import { createOdsFromTemplate, parseOdsTableRows } from "../app/lib/ods";
 import { unzipSync, zipSync } from "fflate";
@@ -32,22 +32,36 @@ test("目的地候補は重複を除き、選択後の区間候補は目的地�
   const masters = createInitialState("2026-07-26").claimMasters;
   assert.deepEqual(claimDestinationCandidates(masters), ["本社", "南越谷", "越谷レイクタウン", "川越教室", "自宅"]);
   assert.deepEqual(claimDestinationCandidates(masters, "越谷"), ["南越谷", "越谷レイクタウン"]);
+  assert.deepEqual(claimDestinationCandidates(masters, "越谷　レイクタウン"), ["越谷レイクタウン"]);
+  assert.equal(claimRouteCandidates(masters, " 越谷　レイクタウン ").length, 1);
   assert.deepEqual(claimRouteCandidates(masters, "本社").map((master) => [master.paidSection, master.icFare]), [
     ["武蔵浦和→北与野", 199],
     ["川越→北与野", 341],
   ]);
 });
 
-test("保存済み実績は空の場合も含めて初期実績で追加・上書きしない", () => {
-  const existing = state();
-  existing.claimMasters = [{ id: "existing", destination: "既存訪問先", origin: "A", arrival: "B", paidSection: "A→B", icFare: 500, reason: "既存理由", useCount: 4, lastUsedDate: "2026-07-20", sourceName: "既存データ" }];
-  assert.equal(resolveStartupState(existing), existing);
-  assert.deepEqual(resolveStartupState(existing).claimMasters, existing.claimMasters);
+test("旧保存環境は既存実績を保護しながら不足する初期実績だけを一回追加する", () => {
+  const existing = state() as unknown as Omit<AppState, "version"> & { version: number };
+  existing.version = 2;
+  existing.claimMasters = [
+    { id: "kept", destination: "本社", origin: "武蔵浦和", arrival: "北与野", paidSection: "武蔵浦和 → 北与野", icFare: 199, reason: "本社業務", useCount: 8, lastUsedDate: "2026-07-20", sourceName: "既存データ" },
+    { id: "custom", destination: "利用者追加先", origin: "A", arrival: "B", paidSection: "A→B", icFare: 500, reason: "既存理由", useCount: 4, lastUsedDate: "2026-07-21", sourceName: "画面入力" },
+  ];
+  const migrated = normalizeState(existing as AppState);
+  assert.equal(migrated.version, 3);
+  assert.equal(migrated.claimMasters.length, 7);
+  assert.deepEqual(migrated.claimMasters.find((master) => master.id === "kept"), existing.claimMasters[0]);
+  assert.deepEqual(migrated.claimMasters.find((master) => master.id === "custom"), existing.claimMasters[1]);
+  assert.equal(migrated.claimMasters.filter((master) => master.destination === "越谷レイクタウン").length, 1);
 
-  const existingEmpty = state();
+  const afterUserDelete = structuredClone(migrated);
+  afterUserDelete.claimMasters = afterUserDelete.claimMasters.filter((master) => master.destination !== "越谷レイクタウン");
+  assert.equal(normalizeState(afterUserDelete).claimMasters.some((master) => master.destination === "越谷レイクタウン"), false);
+
+  const existingEmpty = state() as unknown as Omit<AppState, "version"> & { version: number };
+  existingEmpty.version = 2;
   existingEmpty.claimMasters = [];
-  assert.equal(resolveStartupState(existingEmpty), existingEmpty);
-  assert.deepEqual(resolveStartupState(existingEmpty).claimMasters, []);
+  assert.equal(normalizeState(existingEmpty as AppState).claimMasters.length, 6);
 });
 
 test("旧保存行は入力値を維持してVer3の行状態を補完する", () => {
@@ -58,7 +72,7 @@ test("旧保存行は入力値を維持してVer3の行状態を補完する", (
     reason: "", state: undefined as never, createdAt: "",
   })];
   const normalized = normalizeState(legacy as AppState);
-  assert.equal(normalized.version, 2);
+  assert.equal(normalized.version, 3);
   assert.equal(normalized.expenses[0].date, "2026-07-");
   assert.equal(normalized.expenses[0].paidSection, "");
   assert.equal(normalized.expenses[0].state, "未確認");

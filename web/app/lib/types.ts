@@ -29,7 +29,7 @@ export type ClaimMaster = {
 export type ClaimImport = { id: string; fileName: string; importedAt: string; rowCount: number; addedCount: number };
 
 export type AppState = {
-  version: 2; selectedMonth: string;
+  version: 3; selectedMonth: string;
   profile: { department: string; employeeName: string; homeName: string; homeStation: string };
   workBases: WorkBase[]; dayRules: DayRule[]; commuterPasses: CommuterPass[];
   places: Place[]; schedules: ScheduleItem[]; expenses: ExpenseLine[]; history: HistoryItem[]; fareRules: FareRule[]; captures: ScheduleCapture[];
@@ -38,7 +38,7 @@ export type AppState = {
 };
 
 export const EMPTY_STATE: AppState = {
-  version: 2,
+  version: 3,
   selectedMonth: new Date().toISOString().slice(0, 7),
   profile: { department: "", employeeName: "", homeName: "自宅", homeStation: "" },
   workBases: [],
@@ -55,15 +55,36 @@ const INITIAL_CLAIM_MASTER_VALUES = [
   { destination: "自宅", origin: "北与野", arrival: "武蔵浦和", paidSection: "北与野→武蔵浦和", icFare: 199, reason: "帰宅" },
 ] as const;
 
+export function normalizeMasterText(value: unknown): string {
+  return String(value ?? "").normalize("NFKC").toLocaleLowerCase("ja-JP").replace(/[\s　]+/g, "");
+}
+
+function initialMasterKey(master: { destination: string; paidSection: string; icFare: unknown; reason: string }): string {
+  return [
+    normalizeMasterText(master.destination),
+    normalizeMasterText(master.paidSection),
+    safeAmount(master.icFare),
+    normalizeMasterText(master.reason),
+  ].join("|");
+}
+
+export function addMissingInitialClaimMasters(existing: ClaimMaster[], registeredDate = new Date().toISOString().slice(0, 10)): ClaimMaster[] {
+  const result = structuredClone(existing);
+  const existingKeys = new Set(result.map(initialMasterKey));
+  INITIAL_CLAIM_MASTER_VALUES.forEach((master) => {
+    const key = initialMasterKey(master);
+    if (existingKeys.has(key)) return;
+    result.push({
+      id: crypto.randomUUID(), ...master, useCount: 1, lastUsedDate: registeredDate, sourceName: "初期実績",
+    });
+    existingKeys.add(key);
+  });
+  return result;
+}
+
 export function createInitialState(registeredDate = new Date().toISOString().slice(0, 10)): AppState {
   const initial = structuredClone(EMPTY_STATE);
-  initial.claimMasters = INITIAL_CLAIM_MASTER_VALUES.map((master) => ({
-    id: crypto.randomUUID(),
-    ...master,
-    useCount: 1,
-    lastUsedDate: registeredDate,
-    sourceName: "初期実績",
-  }));
+  initial.claimMasters = addMissingInitialClaimMasters([], registeredDate);
   return initial;
 }
 
@@ -82,7 +103,9 @@ export function safeAmount(value: unknown): number {
 }
 
 export function normalizeState(value: AppState): AppState {
-  const isLegacyVersion = Number((value as { version?: number }).version ?? 0) < 2;
+  const savedVersion = Number((value as { version?: number }).version ?? 0);
+  const isLegacyVersion = savedVersion < 2;
+  const needsInitialMasterMigration = savedVersion < 3;
   const migratedFareRules = value.fareRules ?? (value.history ?? []).filter((item) => Number(item.icFare) > 0).reduce<FareRule[]>((rules, item) => {
     if (rules.some((rule) => rule.origin === item.origin && rule.arrival === item.arrival)) return rules;
     rules.push({ id: crypto.randomUUID(), origin: item.origin, arrival: item.arrival, paidSection: item.paidSection || `${item.origin}→${item.arrival}`, icFare: Number(item.icFare), routeDetails: item.routeDetails || "", registeredAt: item.fareCheckedAt || item.usedAt, lastUsedAt: item.usedAt, useCount: item.count || 1 });
@@ -90,7 +113,7 @@ export function normalizeState(value: AppState): AppState {
   }, []);
   const normalized = {
     ...structuredClone(EMPTY_STATE), ...value,
-    version: 2 as const,
+    version: 3 as const,
     selectedMonth: /^\d{4}-(0[1-9]|1[0-2])$/.test(value.selectedMonth ?? "") ? value.selectedMonth : EMPTY_STATE.selectedMonth,
     profile: { ...EMPTY_STATE.profile, ...(value.profile ?? {}) },
     workBases: value.workBases ?? [], dayRules: value.dayRules?.length ? value.dayRules : EMPTY_STATE.dayRules,
@@ -119,5 +142,6 @@ export function normalizeState(value: AppState): AppState {
   normalized.history = normalized.history.map((item) => ({ ...item, icFare: safeAmount(item.icFare) }));
   normalized.fareRules = normalized.fareRules.map((rule) => ({ ...rule, icFare: safeAmount(rule.icFare) }));
   normalized.claimMasters = normalized.claimMasters.map((master) => ({ ...master, icFare: safeAmount(master.icFare) }));
+  if (needsInitialMasterMigration) normalized.claimMasters = addMissingInitialClaimMasters(normalized.claimMasters);
   return normalized;
 }

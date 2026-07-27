@@ -153,7 +153,7 @@ export function TravelExpenseApp() {
   async function restore(file: File) {
     try {
       const value = JSON.parse(await file.text()) as AppState;
-      if (![1, 2].includes(Number(value.version)) || !Array.isArray(value.expenses)) throw new Error();
+      if (![1, 2, 3].includes(Number(value.version)) || !Array.isArray(value.expenses)) throw new Error();
       setState(normalizeState(value)); setNotice("バックアップを復元しました");
     } catch { setNotice("バックアップを復元できませんでした。ファイルを確認してください。"); }
   }
@@ -546,6 +546,7 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
               <b>{master.paidSection}</b><strong>{safeAmount(master.icFare).toLocaleString("ja-JP")}円</strong><small>{master.reason || "理由なし"}</small>
             </button>)}
           </div>}
+          {routeCandidateRowId === line.id && line.destination.trim() && routeCandidates.length === 0 && <div className="candidate-empty" role="status">一致する実績がありません</div>}
         </div>
         <input data-entry={`${rowIndex}-3`} aria-label={`${rowIndex + 1}行目 金額`} inputMode="numeric" value={entryDrafts[line.id]?.amount ?? (safeAmount(line.icFare) || "")} onFocus={(event) => event.currentTarget.select()} onChange={(event) => setEntryDraft(line.id, "amount", event.target.value)} onBlur={() => { commitAmount(line); }} onKeyDown={(event) => {
           if (event.key !== "Enter") return;

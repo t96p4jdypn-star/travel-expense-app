@@ -1,20 +1,20 @@
-import { safeAmount, type AppState, type ClaimMaster, type ExpenseLine, type FareRule, type ScheduleItem } from "./types";
+import { normalizeMasterText, safeAmount, type AppState, type ClaimMaster, type ExpenseLine, type FareRule, type ScheduleItem } from "./types";
 
 export const uid = () => crypto.randomUUID();
 export const monthOf = (date: string) => date.slice(0, 7);
 export const yen = (value: number) => `${value.toLocaleString("ja-JP")}円`;
 
 export function claimDestinationCandidates(masters: ClaimMaster[], input = ""): string[] {
-  const query = input.trim().toLocaleLowerCase("ja-JP");
+  const query = normalizeMasterText(input);
   return [...new Set(masters
     .map((master) => master.destination.trim())
     .filter(Boolean)
-    .filter((destination) => !query || destination.toLocaleLowerCase("ja-JP").includes(query)))];
+    .filter((destination) => !query || normalizeMasterText(destination).includes(query)))];
 }
 
 export function claimRouteCandidates(masters: ClaimMaster[], destination: string): ClaimMaster[] {
-  const target = destination.trim();
-  return target ? masters.filter((master) => master.destination.trim() === target) : [];
+  const target = normalizeMasterText(destination);
+  return target ? masters.filter((master) => normalizeMasterText(master.destination) === target) : [];
 }
 
 export function outputLines(state: AppState): ExpenseLine[] {
@@ -288,8 +288,8 @@ export function mergeClaimMasters(existing: ClaimMaster[], rows: ImportedClaimRo
   rows.forEach((row) => {
     const { origin, arrival } = stationsFromSection(row.paidSection);
     const icFare = safeAmount(row.icFare);
-    const key = `${row.destination.trim()}|${row.paidSection.replace(/[\s　]/g, "")}|${icFare}|${row.reason.trim()}`;
-    const found = result.find((item) => `${item.destination.trim()}|${item.paidSection.replace(/[\s　]/g, "")}|${item.icFare}|${item.reason.trim()}` === key);
+    const key = `${normalizeMasterText(row.destination)}|${normalizeMasterText(row.paidSection)}|${icFare}|${normalizeMasterText(row.reason)}`;
+    const found = result.find((item) => `${normalizeMasterText(item.destination)}|${normalizeMasterText(item.paidSection)}|${item.icFare}|${normalizeMasterText(item.reason)}` === key);
     if (found) { found.useCount += 1; if (row.date > found.lastUsedDate) found.lastUsedDate = row.date; }
     else result.push({ id: uid(), destination: row.destination, origin, arrival, paidSection: row.paidSection, icFare, reason: row.reason, useCount: 1, lastUsedDate: row.date, sourceName });
   });
