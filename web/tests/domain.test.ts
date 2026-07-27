@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildDayRoute, copyPages, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, prepareClaimRowsForRegistration, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated } from "../app/lib/domain";
+import { buildDayRoute, claimDestinationCandidates, claimRouteCandidates, copyPages, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, prepareClaimRowsForRegistration, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated } from "../app/lib/domain";
 import { createInitialState, EMPTY_STATE, normalizeNumericText, normalizeState, resolveStartupState, safeAmount, type AppState, type ExpenseLine, type ScheduleItem } from "../app/lib/types";
 import { readFile } from "node:fs/promises";
 import { createOdsFromTemplate, parseOdsTableRows } from "../app/lib/ods";
@@ -26,6 +26,16 @@ test("新規環境は入力明細を作らず、初期実績6件だけを候補�
     { destination: "自宅", paidSection: "北与野→武蔵浦和", icFare: 199, reason: "帰宅" },
   ]);
   assert.ok(value.claimMasters.every((master) => master.useCount === 1 && master.lastUsedDate === "2026-07-26" && master.sourceName === "初期実績"));
+});
+
+test("目的地候補は重複を除き、選択後の区間候補は目的地で絞り込む", () => {
+  const masters = createInitialState("2026-07-26").claimMasters;
+  assert.deepEqual(claimDestinationCandidates(masters), ["本社", "南越谷", "越谷レイクタウン", "川越教室", "自宅"]);
+  assert.deepEqual(claimDestinationCandidates(masters, "越谷"), ["南越谷", "越谷レイクタウン"]);
+  assert.deepEqual(claimRouteCandidates(masters, "本社").map((master) => [master.paidSection, master.icFare]), [
+    ["武蔵浦和→北与野", 199],
+    ["川越→北与野", 341],
+  ]);
 });
 
 test("保存済み実績は空の場合も含めて初期実績で追加・上書きしない", () => {

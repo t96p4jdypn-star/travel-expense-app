@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { loadState, saveState } from "./lib/db";
-import { buildDayRoute, copyPages, duplicateKeys, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, parseTextSchedules, prepareClaimRowsForRegistration, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated, uid, yen, type ClaimImportPreviewRow } from "./lib/domain";
+import { buildDayRoute, claimDestinationCandidates, claimRouteCandidates, copyPages, duplicateKeys, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, parseTextSchedules, prepareClaimRowsForRegistration, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated, uid, yen, type ClaimImportPreviewRow } from "./lib/domain";
 import { createExcel } from "./lib/excel";
 import { createOdsFromTemplate, parseOdsTableRows } from "./lib/ods";
 import { EMPTY_STATE, normalizeNumericText, normalizeState, resolveStartupState, safeAmount, type AppState, type ClaimMaster, type CommuterPass, type ExpenseLine, type ScheduleCapture, type ScheduleItem } from "./lib/types";
@@ -270,6 +270,8 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
   const pendingFocus = useRef<{ row: number; column: number } | null>(null);
   const [candidateRowId, setCandidateRowId] = useState("");
   const [candidateIndex, setCandidateIndex] = useState(-1);
+  const [routeCandidateRowId, setRouteCandidateRowId] = useState("");
+  const [routeCandidateIndex, setRouteCandidateIndex] = useState(-1);
   const [entryDrafts, setEntryDrafts] = useState<Record<string, { day?: string; amount?: string }>>({});
 
   useEffect(() => {
@@ -357,6 +359,20 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
     clearEntryDraft(id, "amount");
     setCandidateRowId("");
     setCandidateIndex(-1);
+    setRouteCandidateRowId("");
+    setRouteCandidateIndex(-1);
+  }
+
+  function applyDestination(id: string, destination: string) {
+    updateRow(id, {
+      destination, paidSection: "", icFare: 0, claimAmount: 0, reason: "",
+      origin: "", arrival: "", state: "未確認",
+    });
+    clearEntryDraft(id, "amount");
+    setCandidateRowId("");
+    setCandidateIndex(-1);
+    setRouteCandidateRowId(id);
+    setRouteCandidateIndex(-1);
   }
 
   function finishRow(id: string, rowIndex: number) {
@@ -396,14 +412,12 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
     else focusCell(rowIndex, columnIndex + 1);
   }
 
-  function matchingMasters(value: string) {
-    const query = value.trim().toLocaleLowerCase("ja-JP");
-    if (!query) return masters.slice(0, 8);
-    return masters.filter((master) => master.destination.toLocaleLowerCase("ja-JP").includes(query)).slice(0, 8);
+  function matchingDestinations(value: string) {
+    return claimDestinationCandidates(masters, value).slice(0, 8);
   }
 
   function handleDestinationKey(event: React.KeyboardEvent<HTMLInputElement>, line: ExpenseLine, rowIndex: number) {
-    const candidates = matchingMasters(line.destination);
+    const candidates = matchingDestinations(line.destination);
     if (event.key === "ArrowDown" && candidates.length) {
       event.preventDefault();
       setCandidateRowId(line.id);
@@ -423,10 +437,41 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
     }
     if (event.key !== "Enter") return;
     event.preventDefault();
-    if (candidateRowId === line.id && candidateIndex >= 0 && candidates[candidateIndex]) applyMaster(line.id, candidates[candidateIndex]);
-    setCandidateRowId("");
-    setCandidateIndex(-1);
+    if (candidateRowId === line.id && candidateIndex >= 0 && candidates[candidateIndex]) applyDestination(line.id, candidates[candidateIndex]);
+    else {
+      setCandidateRowId("");
+      setCandidateIndex(-1);
+    }
     focusCell(rowIndex, 2);
+  }
+
+  function handleRouteKey(event: React.KeyboardEvent<HTMLInputElement>, line: ExpenseLine, rowIndex: number) {
+    const candidates = claimRouteCandidates(masters, line.destination);
+    if (event.key === "ArrowDown" && candidates.length) {
+      event.preventDefault();
+      setRouteCandidateRowId(line.id);
+      setRouteCandidateIndex((current) => current < 0 ? 0 : (current + 1) % candidates.length);
+      return;
+    }
+    if (event.key === "ArrowUp" && candidates.length) {
+      event.preventDefault();
+      setRouteCandidateRowId(line.id);
+      setRouteCandidateIndex((current) => current < 0 ? candidates.length - 1 : (current - 1 + candidates.length) % candidates.length);
+      return;
+    }
+    if (event.key === "Escape") {
+      setRouteCandidateRowId("");
+      setRouteCandidateIndex(-1);
+      return;
+    }
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    if (routeCandidateRowId === line.id && routeCandidateIndex >= 0 && candidates[routeCandidateIndex]) applyMaster(line.id, candidates[routeCandidateIndex]);
+    else {
+      setRouteCandidateRowId("");
+      setRouteCandidateIndex(-1);
+    }
+    focusCell(rowIndex, 3);
   }
 
   return <section className="panel entry-panel">
@@ -434,7 +479,8 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
     <div className="entry-table">
       <div className="entry-head"><span>日</span><span>目的地</span><span>区間</span><span>金額</span><span>理由</span><span /></div>
       {rows.map((line, rowIndex) => {
-        const candidates = candidateRowId === line.id ? matchingMasters(line.destination) : [];
+        const candidates = candidateRowId === line.id ? matchingDestinations(line.destination) : [];
+        const routeCandidates = routeCandidateRowId === line.id ? claimRouteCandidates(masters, line.destination) : [];
         return <div className={`entry-row ${line.state === "確認済み" ? "complete" : ""}`} key={line.id}>
         <input data-entry={`${rowIndex}-0`} aria-label={`${rowIndex + 1}行目 日`} inputMode="numeric" value={entryDrafts[line.id]?.day ?? (Number(line.date.slice(8, 10)) || "")} onChange={(event) => {
           setEntryDraft(line.id, "day", event.target.value);
@@ -453,16 +499,33 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
             setCandidateRowId(line.id);
             setCandidateIndex(-1);
           }} onKeyDown={(event) => handleDestinationKey(event, line, rowIndex)} />
-          {candidates.length > 0 && <div className="candidate-list" id={`candidate-list-${line.id}`} role="listbox">
-            {candidates.map((master, index) => <button type="button" role="option" aria-selected={candidateIndex === index} className={candidateIndex === index ? "selected" : ""} key={master.id} onMouseDown={(event) => event.preventDefault()} onClick={() => {
-              applyMaster(line.id, master);
+          {candidates.length > 0 && <div className="candidate-list destination-candidates" id={`candidate-list-${line.id}`} role="listbox" aria-label={`${rowIndex + 1}行目 目的地候補`}>
+            {candidates.map((destination, index) => <button type="button" role="option" aria-selected={candidateIndex === index} className={candidateIndex === index ? "selected" : ""} key={destination} onMouseDown={(event) => event.preventDefault()} onClick={() => {
+              applyDestination(line.id, destination);
               focusCell(rowIndex, 2);
             }}>
-              <b>{master.destination}</b><span>{master.paidSection}</span><strong>{safeAmount(master.icFare).toLocaleString("ja-JP")}円</strong><small>{master.reason || "理由なし"}</small>
+              <b>{destination}</b>
             </button>)}
           </div>}
         </div>
-        <input data-entry={`${rowIndex}-2`} aria-label={`${rowIndex + 1}行目 区間`} value={line.paidSection} onChange={(event) => updateRow(line.id, { paidSection: event.target.value, state: "未確認" })} onKeyDown={(event) => handleEnter(event, line, rowIndex, 2)} />
+        <div className="route-cell">
+          <input data-entry={`${rowIndex}-2`} role="combobox" aria-autocomplete="list" aria-label={`${rowIndex + 1}行目 区間`} aria-expanded={routeCandidateRowId === line.id && routeCandidates.length > 0} aria-controls={`route-list-${line.id}`} value={line.paidSection} onFocus={() => {
+            setRouteCandidateRowId(line.id);
+            setRouteCandidateIndex(-1);
+          }} onChange={(event) => {
+            updateRow(line.id, { paidSection: event.target.value, state: "未確認" });
+            setRouteCandidateRowId("");
+            setRouteCandidateIndex(-1);
+          }} onKeyDown={(event) => handleRouteKey(event, line, rowIndex)} />
+          {routeCandidates.length > 0 && <div className="candidate-list route-candidates" id={`route-list-${line.id}`} role="listbox" aria-label={`${rowIndex + 1}行目 区間候補`}>
+            {routeCandidates.map((master, index) => <button type="button" role="option" aria-selected={routeCandidateIndex === index} className={routeCandidateIndex === index ? "selected" : ""} key={master.id} onMouseDown={(event) => event.preventDefault()} onClick={() => {
+              applyMaster(line.id, master);
+              focusCell(rowIndex, 3);
+            }}>
+              <b>{master.paidSection}</b><strong>{safeAmount(master.icFare).toLocaleString("ja-JP")}円</strong><small>{master.reason || "理由なし"}</small>
+            </button>)}
+          </div>}
+        </div>
         <input data-entry={`${rowIndex}-3`} aria-label={`${rowIndex + 1}行目 金額`} inputMode="numeric" value={entryDrafts[line.id]?.amount ?? (safeAmount(line.icFare) || "")} onFocus={(event) => event.currentTarget.select()} onChange={(event) => setEntryDraft(line.id, "amount", event.target.value)} onBlur={() => { commitAmount(line); }} onKeyDown={(event) => {
           if (event.key !== "Enter") return;
           event.preventDefault();

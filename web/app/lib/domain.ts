@@ -4,6 +4,19 @@ export const uid = () => crypto.randomUUID();
 export const monthOf = (date: string) => date.slice(0, 7);
 export const yen = (value: number) => `${value.toLocaleString("ja-JP")}円`;
 
+export function claimDestinationCandidates(masters: ClaimMaster[], input = ""): string[] {
+  const query = input.trim().toLocaleLowerCase("ja-JP");
+  return [...new Set(masters
+    .map((master) => master.destination.trim())
+    .filter(Boolean)
+    .filter((destination) => !query || destination.toLocaleLowerCase("ja-JP").includes(query)))];
+}
+
+export function claimRouteCandidates(masters: ClaimMaster[], destination: string): ClaimMaster[] {
+  const target = destination.trim();
+  return target ? masters.filter((master) => master.destination.trim() === target) : [];
+}
+
 export function outputLines(state: AppState): ExpenseLine[] {
   return state.expenses
     .filter((line) => monthOf(line.date) === state.selectedMonth)
