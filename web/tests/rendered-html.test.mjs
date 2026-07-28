@@ -26,10 +26,11 @@ test("旅費申請アプリを日本語メタデータ付きで描画する", as
 });
 
 test("公開物にPWA定義と端末内OCRモデルを同梱する", async () => {
-  const [manifest, page, app] = await Promise.all([
+  const [manifest, page, app, styles] = await Promise.all([
     readFile(new URL("../public/manifest.webmanifest", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/travel-expense-app.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
   assert.match(manifest, /出張旅費申請書作成アプリ/);
   assert.match(page, /TravelExpenseApp/);
@@ -50,6 +51,10 @@ test("公開物にPWA定義と端末内OCRモデルを同梱する", async () =>
   assert.doesNotMatch(app, /fetch\("\/api\/fare"/);
   assert.match(app, /スクリーンショットを貼り付け/);
   assert.match(app, /試験機能：画像・PDFから予定を読み取る/);
+  assert.match(app, /createPortal/);
+  assert.match(app, /position: "fixed"/);
+  assert.match(app, /onPointerDown/);
+  assert.match(styles, /\.entry-table[^}]*overflow:auto/);
   await access(new URL("../public/tessdata/jpn.traineddata.gz", import.meta.url));
   await access(new URL("../public/2026年度版出張旅費代精算書原本.ods", import.meta.url));
 });

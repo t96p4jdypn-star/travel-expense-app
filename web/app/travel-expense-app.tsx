@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { loadState, saveState } from "./lib/db";
 import { buildDayRoute, claimDestinationCandidates, claimRouteCandidates, copyPages, duplicateKeys, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, parseTextSchedules, prepareClaimRowsForRegistration, prioritizeClaimRouteCandidates, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated, uid, yen, type ClaimImportPreviewRow } from "./lib/domain";
 import { createExcel } from "./lib/excel";
@@ -28,6 +29,52 @@ function Field({ label, children, hint }: { label: string; children: React.React
 }
 
 function StatusBadge({ value }: { value: string }) { return <span className={`status status-${value}`}>{value}</span>; }
+
+function FloatingCandidateLayer({ anchor, className, preferredWidth, children }: {
+  anchor: HTMLInputElement | null;
+  className: string;
+  preferredWidth: number;
+  children: React.ReactNode;
+}) {
+  const [position, setPosition] = useState<React.CSSProperties | null>(null);
+
+  useEffect(() => {
+    if (!anchor) {
+      setPosition(null);
+      return;
+    }
+    const updatePosition = () => {
+      const rect = anchor.getBoundingClientRect();
+      const viewportPadding = 8;
+      const gap = 2;
+      const width = Math.min(preferredWidth, window.innerWidth - viewportPadding * 2);
+      const left = Math.min(Math.max(viewportPadding, rect.left), window.innerWidth - width - viewportPadding);
+      const spaceBelow = window.innerHeight - rect.bottom - viewportPadding - gap;
+      const spaceAbove = rect.top - viewportPadding - gap;
+      const showAbove = spaceBelow < 120 && spaceAbove > spaceBelow;
+      setPosition({
+        position: "fixed",
+        zIndex: 1000,
+        left,
+        width,
+        maxHeight: Math.max(72, Math.min(280, showAbove ? spaceAbove : spaceBelow)),
+        ...(showAbove
+          ? { bottom: window.innerHeight - rect.top + gap, top: "auto" }
+          : { top: rect.bottom + gap, bottom: "auto" }),
+      });
+    };
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [anchor, preferredWidth]);
+
+  if (!anchor || !position) return null;
+  return createPortal(<div className={className} style={position}>{children}</div>, document.body);
+}
 
 export function TravelExpenseApp() {
   const [state, setState] = useState<AppState>(EMPTY_STATE);
@@ -294,6 +341,8 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
   const [routeCandidateRowId, setRouteCandidateRowId] = useState("");
   const [routeCandidateIndex, setRouteCandidateIndex] = useState(-1);
   const [entryDrafts, setEntryDrafts] = useState<Record<string, { day?: string; amount?: string }>>({});
+  const destinationInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const routeInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   useEffect(() => {
     if (rows.length) return;
@@ -516,7 +565,7 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
           if (commitDay(line)) focusCell(rowIndex, 1);
         }} />
         <div className="destination-cell">
-          <input data-entry={`${rowIndex}-1`} role="combobox" aria-autocomplete="list" aria-label={`${rowIndex + 1}行目 目的地`} aria-expanded={candidateRowId === line.id && candidates.length > 0} aria-controls={`candidate-list-${line.id}`} value={line.destination} onFocus={() => {
+          <input ref={(element) => { destinationInputRefs.current[line.id] = element; }} data-entry={`${rowIndex}-1`} role="combobox" aria-autocomplete="list" aria-label={`${rowIndex + 1}行目 目的地`} aria-expanded={candidateRowId === line.id && candidates.length > 0} aria-controls={`candidate-list-${line.id}`} value={line.destination} onFocus={() => {
             setCandidateRowId(line.id);
             setCandidateIndex(-1);
           }} onChange={(event) => {
@@ -525,17 +574,19 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
             setCandidateRowId(line.id);
             setCandidateIndex(-1);
           }} onKeyDown={(event) => handleDestinationKey(event, line, rowIndex)} />
-          {candidates.length > 0 && <div className="candidate-list destination-candidates" id={`candidate-list-${line.id}`} role="listbox" aria-label={`${rowIndex + 1}行目 目的地候補`}>
+          {candidates.length > 0 && <FloatingCandidateLayer anchor={destinationInputRefs.current[line.id]} className="candidate-list destination-candidates" preferredWidth={320}>
+            <div id={`candidate-list-${line.id}`} role="listbox" aria-label={`${rowIndex + 1}行目 目的地候補`}>
             {candidates.map((destination, index) => <button type="button" role="option" aria-selected={candidateIndex === index} className={candidateIndex === index ? "selected" : ""} key={destination} onMouseDown={(event) => event.preventDefault()} onClick={() => {
               applyDestination(line.id, destination);
               focusCell(rowIndex, 2);
-            }}>
+            }} onPointerDown={(event) => event.preventDefault()}>
               <b>{destination}</b>
             </button>)}
-          </div>}
+            </div>
+          </FloatingCandidateLayer>}
         </div>
         <div className="route-cell">
-          <input data-entry={`${rowIndex}-2`} role="combobox" aria-autocomplete="list" aria-label={`${rowIndex + 1}行目 区間`} aria-expanded={showRouteCandidates && routeCandidates.length > 0} aria-controls={`route-list-${line.id}`} value={line.paidSection} onFocus={() => {
+          <input ref={(element) => { routeInputRefs.current[line.id] = element; }} data-entry={`${rowIndex}-2`} role="combobox" aria-autocomplete="list" aria-label={`${rowIndex + 1}行目 区間`} aria-expanded={showRouteCandidates && routeCandidates.length > 0} aria-controls={`route-list-${line.id}`} value={line.paidSection} onFocus={() => {
             setRouteCandidateRowId(line.id);
             setRouteCandidateIndex(-1);
           }} onChange={(event) => {
@@ -543,15 +594,19 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
             setRouteCandidateRowId("");
             setRouteCandidateIndex(-1);
           }} onKeyDown={(event) => handleRouteKey(event, line, rowIndex)} />
-          {showRouteCandidates && routeCandidates.length > 0 && <div className="candidate-list route-candidates" id={`route-list-${line.id}`} role="listbox" aria-label={`${rowIndex + 1}行目 区間候補`}>
+          {showRouteCandidates && routeCandidates.length > 0 && <FloatingCandidateLayer anchor={routeInputRefs.current[line.id]} className="candidate-list route-candidates" preferredWidth={640}>
+            <div id={`route-list-${line.id}`} role="listbox" aria-label={`${rowIndex + 1}行目 区間候補`}>
             {routeCandidates.map((master, index) => <button type="button" role="option" aria-selected={routeCandidateIndex === index} className={routeCandidateIndex === index ? "selected" : ""} key={master.id} onMouseDown={(event) => event.preventDefault()} onClick={() => {
               applyMaster(line.id, master);
               focusCell(rowIndex, 3);
-            }}>
+            }} onPointerDown={(event) => event.preventDefault()}>
               <b>{master.paidSection}</b><strong>{safeAmount(master.icFare).toLocaleString("ja-JP")}円</strong><small>{master.reason || "理由なし"}</small>
             </button>)}
-          </div>}
-          {showRouteCandidates && line.destination.trim() && routeCandidates.length === 0 && <div className="candidate-empty" role="status">一致する実績がありません</div>}
+            </div>
+          </FloatingCandidateLayer>}
+          {showRouteCandidates && line.destination.trim() && routeCandidates.length === 0 && <FloatingCandidateLayer anchor={routeInputRefs.current[line.id]} className="candidate-empty" preferredWidth={320}>
+            <div role="status">一致する実績がありません</div>
+          </FloatingCandidateLayer>}
         </div>
         <input data-entry={`${rowIndex}-3`} aria-label={`${rowIndex + 1}行目 金額`} inputMode="numeric" value={entryDrafts[line.id]?.amount ?? (safeAmount(line.icFare) || "")} onFocus={(event) => event.currentTarget.select()} onChange={(event) => setEntryDraft(line.id, "amount", event.target.value)} onBlur={() => { commitAmount(line); }} onKeyDown={(event) => {
           if (event.key !== "Enter") return;
