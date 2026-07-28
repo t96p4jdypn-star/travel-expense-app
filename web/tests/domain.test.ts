@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildDayRoute, claimDestinationCandidates, claimRouteCandidates, copyPages, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, prepareClaimRowsForRegistration, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated } from "../app/lib/domain";
+import { buildDayRoute, claimDestinationCandidates, claimRouteCandidates, copyPages, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, prepareClaimRowsForRegistration, prioritizeClaimRouteCandidates, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated } from "../app/lib/domain";
 import { createInitialState, EMPTY_STATE, normalizeNumericText, normalizeState, safeAmount, type AppState, type ExpenseLine, type ScheduleItem } from "../app/lib/types";
 import { readFile } from "node:fs/promises";
 import { createOdsFromTemplate, parseOdsTableRows } from "../app/lib/ods";
@@ -38,6 +38,13 @@ test("目的地候補は重複を除き、選択後の区間候補は目的地�
     ["武蔵浦和→北与野", 199],
     ["川越→北与野", 341],
   ]);
+});
+
+test("金額または理由が不足する区間候補は完全な候補より後方に表示する", () => {
+  const incomplete = { id: "incomplete", destination: "本社", origin: "武蔵浦和", arrival: "北与野", paidSection: "武蔵浦和→北与野", icFare: 0, reason: "", useCount: 8, lastUsedDate: "2026-07-29", sourceName: "既存" };
+  const complete = { id: "complete", destination: "本社", origin: "武蔵浦和", arrival: "北与野", paidSection: "武蔵浦和→北与野", icFare: 199, reason: "本社業務", useCount: 1, lastUsedDate: "2026-07-27", sourceName: "初期実績" };
+  assert.deepEqual(prioritizeClaimRouteCandidates([incomplete, complete]).map((master) => master.id), ["complete", "incomplete"]);
+  assert.deepEqual(claimRouteCandidates([incomplete, complete], "本社").map((master) => master.id), ["incomplete", "complete"]);
 });
 
 test("旧保存環境は既存実績を保護しながら不足する初期実績だけを一回追加する", () => {

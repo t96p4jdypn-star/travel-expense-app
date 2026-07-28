@@ -17,6 +17,20 @@ export function claimRouteCandidates(masters: ClaimMaster[], destination: string
   return target ? masters.filter((master) => normalizeMasterText(master.destination) === target) : [];
 }
 
+export function prioritizeClaimRouteCandidates(candidates: ClaimMaster[]): ClaimMaster[] {
+  return candidates
+    .map((master, index) => ({
+      master,
+      index,
+      missingCount:
+        Number(!master.paidSection.trim())
+        + Number(safeAmount(master.icFare) <= 0)
+        + Number(!master.reason.trim()),
+    }))
+    .sort((a, b) => a.missingCount - b.missingCount || a.index - b.index)
+    .map(({ master }) => master);
+}
+
 export function outputLines(state: AppState): ExpenseLine[] {
   return state.expenses
     .filter((line) => monthOf(line.date) === state.selectedMonth)

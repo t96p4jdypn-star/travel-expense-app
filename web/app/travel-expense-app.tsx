@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { loadState, saveState } from "./lib/db";
-import { buildDayRoute, claimDestinationCandidates, claimRouteCandidates, copyPages, duplicateKeys, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, parseTextSchedules, prepareClaimRowsForRegistration, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated, uid, yen, type ClaimImportPreviewRow } from "./lib/domain";
+import { buildDayRoute, claimDestinationCandidates, claimRouteCandidates, copyPages, duplicateKeys, findFareRule, isPassCovered, mergeClaimMasters, outputLines, parseClaimRows, parseIcsSchedules, parseOcrSchedules, parseTextSchedules, prepareClaimRowsForRegistration, prioritizeClaimRouteCandidates, recalculateExpenseLine, stationsFromSection, suggestExpenseFromDestination, tabSeparated, uid, yen, type ClaimImportPreviewRow } from "./lib/domain";
 import { createExcel } from "./lib/excel";
 import { createOdsFromTemplate, parseOdsTableRows } from "./lib/ods";
 import { EMPTY_STATE, normalizeNumericText, normalizeState, resolveStartupState, safeAmount, type AppState, type ClaimMaster, type CommuterPass, type ExpenseLine, type ScheduleCapture, type ScheduleItem } from "./lib/types";
@@ -437,6 +437,10 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
     return claimDestinationCandidates(masters, value).slice(0, 8);
   }
 
+  function matchingRoutes(destination: string) {
+    return prioritizeClaimRouteCandidates(claimRouteCandidates(masters, destination));
+  }
+
   function handleDestinationKey(event: React.KeyboardEvent<HTMLInputElement>, line: ExpenseLine, rowIndex: number) {
     const candidates = matchingDestinations(line.destination);
     if (event.key === "ArrowDown" && candidates.length) {
@@ -467,7 +471,7 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
   }
 
   function handleRouteKey(event: React.KeyboardEvent<HTMLInputElement>, line: ExpenseLine, rowIndex: number) {
-    const candidates = claimRouteCandidates(masters, line.destination);
+    const candidates = matchingRoutes(line.destination);
     if (event.key === "ArrowDown" && candidates.length) {
       event.preventDefault();
       setRouteCandidateRowId(line.id);
@@ -501,7 +505,8 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
       <div className="entry-head"><span>日</span><span>目的地</span><span>区間</span><span>金額</span><span>理由</span><span /></div>
       {rows.map((line, rowIndex) => {
         const candidates = candidateRowId === line.id ? matchingDestinations(line.destination) : [];
-        const routeCandidates = routeCandidateRowId === line.id ? claimRouteCandidates(masters, line.destination) : [];
+        const routeCandidates = matchingRoutes(line.destination);
+        const showRouteCandidates = routeCandidateRowId === line.id;
         return <div className={`entry-row ${line.state === "確認済み" ? "complete" : ""}`} key={line.id}>
         <input data-entry={`${rowIndex}-0`} aria-label={`${rowIndex + 1}行目 日`} inputMode="numeric" value={entryDrafts[line.id]?.day ?? (Number(line.date.slice(8, 10)) || "")} onChange={(event) => {
           setEntryDraft(line.id, "day", event.target.value);
@@ -530,7 +535,7 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
           </div>}
         </div>
         <div className="route-cell">
-          <input data-entry={`${rowIndex}-2`} role="combobox" aria-autocomplete="list" aria-label={`${rowIndex + 1}行目 区間`} aria-expanded={routeCandidateRowId === line.id && routeCandidates.length > 0} aria-controls={`route-list-${line.id}`} value={line.paidSection} onFocus={() => {
+          <input data-entry={`${rowIndex}-2`} role="combobox" aria-autocomplete="list" aria-label={`${rowIndex + 1}行目 区間`} aria-expanded={showRouteCandidates && routeCandidates.length > 0} aria-controls={`route-list-${line.id}`} value={line.paidSection} onFocus={() => {
             setRouteCandidateRowId(line.id);
             setRouteCandidateIndex(-1);
           }} onChange={(event) => {
@@ -538,7 +543,7 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
             setRouteCandidateRowId("");
             setRouteCandidateIndex(-1);
           }} onKeyDown={(event) => handleRouteKey(event, line, rowIndex)} />
-          {routeCandidates.length > 0 && <div className="candidate-list route-candidates" id={`route-list-${line.id}`} role="listbox" aria-label={`${rowIndex + 1}行目 区間候補`}>
+          {showRouteCandidates && routeCandidates.length > 0 && <div className="candidate-list route-candidates" id={`route-list-${line.id}`} role="listbox" aria-label={`${rowIndex + 1}行目 区間候補`}>
             {routeCandidates.map((master, index) => <button type="button" role="option" aria-selected={routeCandidateIndex === index} className={routeCandidateIndex === index ? "selected" : ""} key={master.id} onMouseDown={(event) => event.preventDefault()} onClick={() => {
               applyMaster(line.id, master);
               focusCell(rowIndex, 3);
@@ -546,7 +551,7 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
               <b>{master.paidSection}</b><strong>{safeAmount(master.icFare).toLocaleString("ja-JP")}円</strong><small>{master.reason || "理由なし"}</small>
             </button>)}
           </div>}
-          {routeCandidateRowId === line.id && line.destination.trim() && routeCandidates.length === 0 && <div className="candidate-empty" role="status">一致する実績がありません</div>}
+          {showRouteCandidates && line.destination.trim() && routeCandidates.length === 0 && <div className="candidate-empty" role="status">一致する実績がありません</div>}
         </div>
         <input data-entry={`${rowIndex}-3`} aria-label={`${rowIndex + 1}行目 金額`} inputMode="numeric" value={entryDrafts[line.id]?.amount ?? (safeAmount(line.icFare) || "")} onFocus={(event) => event.currentTarget.select()} onChange={(event) => setEntryDraft(line.id, "amount", event.target.value)} onBlur={() => { commitAmount(line); }} onKeyDown={(event) => {
           if (event.key !== "Enter") return;
