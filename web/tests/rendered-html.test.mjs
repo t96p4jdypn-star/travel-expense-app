@@ -54,6 +54,10 @@ test("公開物にPWA定義と端末内OCRモデルを同梱する", async () =>
   assert.match(app, /createPortal/);
   assert.match(app, /position: "fixed"/);
   assert.match(app, /onPointerDown/);
+  assert.match(app, /layer\.scrollTop/);
+  assert.match(app, /data-settings-enter/);
+  assert.match(app, /nativeEvent\.isComposing/);
+  assert.match(app, /Math\.min\(current \+ 1, candidates\.length - 1\)/);
   assert.match(styles, /\.entry-table[^}]*overflow:auto/);
   await access(new URL("../public/tessdata/jpn.traineddata.gz", import.meta.url));
   await access(new URL("../public/2026年度版出張旅費代精算書原本.ods", import.meta.url));

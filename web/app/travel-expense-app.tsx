@@ -30,13 +30,15 @@ function Field({ label, children, hint }: { label: string; children: React.React
 
 function StatusBadge({ value }: { value: string }) { return <span className={`status status-${value}`}>{value}</span>; }
 
-function FloatingCandidateLayer({ anchor, className, preferredWidth, children }: {
+function FloatingCandidateLayer({ anchor, className, preferredWidth, selectedIndex, children }: {
   anchor: HTMLInputElement | null;
   className: string;
   preferredWidth: number;
+  selectedIndex?: number;
   children: React.ReactNode;
 }) {
   const [position, setPosition] = useState<React.CSSProperties | null>(null);
+  const layerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!anchor) {
@@ -72,8 +74,23 @@ function FloatingCandidateLayer({ anchor, className, preferredWidth, children }:
     };
   }, [anchor, preferredWidth]);
 
+  useEffect(() => {
+    if (selectedIndex === undefined || selectedIndex < 0) return;
+    const layer = layerRef.current;
+    const selected = layer?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]');
+    if (!layer || !selected) return;
+    const layerRect = layer.getBoundingClientRect();
+    const selectedRect = selected.getBoundingClientRect();
+    if (selectedRect.top < layerRect.top) layer.scrollTop -= layerRect.top - selectedRect.top;
+    else if (selectedRect.bottom > layerRect.bottom) layer.scrollTop += selectedRect.bottom - layerRect.bottom;
+  }, [selectedIndex]);
+
   if (!anchor || !position) return null;
-  return createPortal(<div className={className} style={position}>{children}</div>, document.body);
+  return createPortal(<div ref={layerRef} className={className} style={position}>{children}</div>, document.body);
+}
+
+function isImeComposing(event: React.KeyboardEvent<HTMLElement>): boolean {
+  return event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229;
 }
 
 export function TravelExpenseApp() {
@@ -296,24 +313,30 @@ function BasicInfoView({ state, mutate, setNotice }: {
       return draft;
     });
   }
-  return <section className="panel basic-info-panel">
+  function handleSettingsEnter(event: React.KeyboardEvent<HTMLElement>) {
+    if (event.key !== "Enter" || isImeComposing(event) || !(event.target instanceof HTMLInputElement)) return;
+    event.preventDefault();
+    const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>("[data-settings-enter]"));
+    controls[Math.min(controls.indexOf(event.target) + 1, controls.length - 1)]?.focus();
+  }
+  return <section className="panel basic-info-panel" onKeyDown={handleSettingsEnter}>
     <div className="panel-heading"><div><span className="eyebrow">設定</span><h2>基本情報</h2><p>申請書へ出力する所属・氏名と、保持する定期区間情報を登録します。</p></div></div>
     <div className="basic-profile-grid">
-      <Field label="所属"><input aria-label="所属" value={state.profile.department} onChange={(event) => updateProfile({ department: event.target.value })} /></Field>
-      <Field label="氏名"><input aria-label="氏名" value={state.profile.employeeName} onChange={(event) => updateProfile({ employeeName: event.target.value })} /></Field>
+      <Field label="所属"><input data-settings-enter aria-label="所属" value={state.profile.department} onChange={(event) => updateProfile({ department: event.target.value })} /></Field>
+      <Field label="氏名"><input data-settings-enter aria-label="氏名" value={state.profile.employeeName} onChange={(event) => updateProfile({ employeeName: event.target.value })} /></Field>
     </div>
     <div className="basic-section-heading"><div><h3>定期区間情報</h3><p>情報保持のみです。Ver3の旅費判定には使用しません。</p></div><button className="secondary" onClick={() => mutate((draft) => ({ ...draft, commuterPasses: [...draft.commuterPasses, { id: uid(), startStation: "", endStation: "", viaStations: "", lines: "", validFrom: "", validTo: "" }] }))}>＋ 定期区間を追加</button></div>
     <div className="basic-pass-list">
       {state.commuterPasses.map((pass, index) => <div className="basic-pass-row" key={pass.id}>
-        <Field label={`定期区間 ${index + 1}・開始駅`}><input aria-label={`定期区間${index + 1} 開始駅`} value={pass.startStation} onChange={(event) => updatePass(pass.id, { startStation: event.target.value })} /></Field>
-        <Field label="終了駅"><input aria-label={`定期区間${index + 1} 終了駅`} value={pass.endStation} onChange={(event) => updatePass(pass.id, { endStation: event.target.value })} /></Field>
-        <Field label="経由駅"><input aria-label={`定期区間${index + 1} 経由駅`} value={pass.viaStations} onChange={(event) => updatePass(pass.id, { viaStations: event.target.value })} /></Field>
-        <Field label="路線"><input aria-label={`定期区間${index + 1} 路線`} value={pass.lines} onChange={(event) => updatePass(pass.id, { lines: event.target.value })} /></Field>
+        <Field label={`定期区間 ${index + 1}・開始駅`}><input data-settings-enter aria-label={`定期区間${index + 1} 開始駅`} value={pass.startStation} onChange={(event) => updatePass(pass.id, { startStation: event.target.value })} /></Field>
+        <Field label="終了駅"><input data-settings-enter aria-label={`定期区間${index + 1} 終了駅`} value={pass.endStation} onChange={(event) => updatePass(pass.id, { endStation: event.target.value })} /></Field>
+        <Field label="経由駅"><input data-settings-enter aria-label={`定期区間${index + 1} 経由駅`} value={pass.viaStations} onChange={(event) => updatePass(pass.id, { viaStations: event.target.value })} /></Field>
+        <Field label="路線"><input data-settings-enter aria-label={`定期区間${index + 1} 路線`} value={pass.lines} onChange={(event) => updatePass(pass.id, { lines: event.target.value })} /></Field>
         <button className="icon-button" onClick={() => mutate((draft) => ({ ...draft, commuterPasses: draft.commuterPasses.filter((item) => item.id !== pass.id) }))}>削除</button>
       </div>)}
       {!state.commuterPasses.length && <p className="muted">定期区間情報はまだ登録されていません。</p>}
     </div>
-    <button className="primary settings-confirm" onClick={() => setNotice("基本情報を保存しました。")}>基本情報を保存</button>
+    <button data-settings-enter className="primary settings-confirm" onClick={() => setNotice("基本情報を保存しました。")}>基本情報を保存</button>
   </section>;
 }
 
@@ -476,7 +499,7 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
   }
 
   function handleEnter(event: React.KeyboardEvent<HTMLInputElement>, line: ExpenseLine, rowIndex: number, columnIndex: number) {
-    if (event.key !== "Enter") return;
+    if (event.key !== "Enter" || isImeComposing(event)) return;
     event.preventDefault();
     if (columnIndex === TABLE_FIELDS.length - 1) finishRow(line.id, rowIndex);
     else focusCell(rowIndex, columnIndex + 1);
@@ -491,17 +514,18 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
   }
 
   function handleDestinationKey(event: React.KeyboardEvent<HTMLInputElement>, line: ExpenseLine, rowIndex: number) {
+    if (isImeComposing(event)) return;
     const candidates = matchingDestinations(line.destination);
     if (event.key === "ArrowDown" && candidates.length) {
       event.preventDefault();
       setCandidateRowId(line.id);
-      setCandidateIndex((current) => current < 0 ? 0 : (current + 1) % candidates.length);
+      setCandidateIndex((current) => current < 0 ? 0 : Math.min(current + 1, candidates.length - 1));
       return;
     }
     if (event.key === "ArrowUp" && candidates.length) {
       event.preventDefault();
       setCandidateRowId(line.id);
-      setCandidateIndex((current) => current < 0 ? candidates.length - 1 : (current - 1 + candidates.length) % candidates.length);
+      setCandidateIndex((current) => current < 0 ? candidates.length - 1 : Math.max(current - 1, 0));
       return;
     }
     if (event.key === "Escape") {
@@ -520,17 +544,18 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
   }
 
   function handleRouteKey(event: React.KeyboardEvent<HTMLInputElement>, line: ExpenseLine, rowIndex: number) {
+    if (isImeComposing(event)) return;
     const candidates = matchingRoutes(line.destination);
     if (event.key === "ArrowDown" && candidates.length) {
       event.preventDefault();
       setRouteCandidateRowId(line.id);
-      setRouteCandidateIndex((current) => current < 0 ? 0 : (current + 1) % candidates.length);
+      setRouteCandidateIndex((current) => current < 0 ? 0 : Math.min(current + 1, candidates.length - 1));
       return;
     }
     if (event.key === "ArrowUp" && candidates.length) {
       event.preventDefault();
       setRouteCandidateRowId(line.id);
-      setRouteCandidateIndex((current) => current < 0 ? candidates.length - 1 : (current - 1 + candidates.length) % candidates.length);
+      setRouteCandidateIndex((current) => current < 0 ? candidates.length - 1 : Math.max(current - 1, 0));
       return;
     }
     if (event.key === "Escape") {
@@ -560,7 +585,7 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
         <input data-entry={`${rowIndex}-0`} aria-label={`${rowIndex + 1}行目 日`} inputMode="numeric" value={entryDrafts[line.id]?.day ?? (Number(line.date.slice(8, 10)) || "")} onChange={(event) => {
           setEntryDraft(line.id, "day", event.target.value);
         }} onBlur={() => { commitDay(line); }} onFocus={(event) => event.currentTarget.select()} onKeyDown={(event) => {
-          if (event.key !== "Enter") return;
+          if (event.key !== "Enter" || isImeComposing(event)) return;
           event.preventDefault();
           if (commitDay(line)) focusCell(rowIndex, 1);
         }} />
@@ -574,7 +599,7 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
             setCandidateRowId(line.id);
             setCandidateIndex(-1);
           }} onKeyDown={(event) => handleDestinationKey(event, line, rowIndex)} />
-          {candidates.length > 0 && <FloatingCandidateLayer anchor={destinationInputRefs.current[line.id]} className="candidate-list destination-candidates" preferredWidth={320}>
+          {candidates.length > 0 && <FloatingCandidateLayer anchor={destinationInputRefs.current[line.id]} className="candidate-list destination-candidates" preferredWidth={320} selectedIndex={candidateIndex}>
             <div id={`candidate-list-${line.id}`} role="listbox" aria-label={`${rowIndex + 1}行目 目的地候補`}>
             {candidates.map((destination, index) => <button type="button" role="option" aria-selected={candidateIndex === index} className={candidateIndex === index ? "selected" : ""} key={destination} onMouseDown={(event) => event.preventDefault()} onClick={() => {
               applyDestination(line.id, destination);
@@ -594,7 +619,7 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
             setRouteCandidateRowId("");
             setRouteCandidateIndex(-1);
           }} onKeyDown={(event) => handleRouteKey(event, line, rowIndex)} />
-          {showRouteCandidates && routeCandidates.length > 0 && <FloatingCandidateLayer anchor={routeInputRefs.current[line.id]} className="candidate-list route-candidates" preferredWidth={640}>
+          {showRouteCandidates && routeCandidates.length > 0 && <FloatingCandidateLayer anchor={routeInputRefs.current[line.id]} className="candidate-list route-candidates" preferredWidth={640} selectedIndex={routeCandidateIndex}>
             <div id={`route-list-${line.id}`} role="listbox" aria-label={`${rowIndex + 1}行目 区間候補`}>
             {routeCandidates.map((master, index) => <button type="button" role="option" aria-selected={routeCandidateIndex === index} className={routeCandidateIndex === index ? "selected" : ""} key={master.id} onMouseDown={(event) => event.preventDefault()} onClick={() => {
               applyMaster(line.id, master);
@@ -609,7 +634,7 @@ function TableEntryView({ state, mutate, setNotice }: { state: AppState; mutate:
           </FloatingCandidateLayer>}
         </div>
         <input data-entry={`${rowIndex}-3`} aria-label={`${rowIndex + 1}行目 金額`} inputMode="numeric" value={entryDrafts[line.id]?.amount ?? (safeAmount(line.icFare) || "")} onFocus={(event) => event.currentTarget.select()} onChange={(event) => setEntryDraft(line.id, "amount", event.target.value)} onBlur={() => { commitAmount(line); }} onKeyDown={(event) => {
-          if (event.key !== "Enter") return;
+          if (event.key !== "Enter" || isImeComposing(event)) return;
           event.preventDefault();
           commitAmount(line);
           focusCell(rowIndex, 4);

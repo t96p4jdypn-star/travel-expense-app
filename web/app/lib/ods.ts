@@ -1,6 +1,6 @@
 import type { AppState, ExpenseLine } from "./types";
 import { copyPages } from "./domain";
-import { unzipSync } from "fflate";
+import { unzipSync, zipSync, type Zippable } from "fflate";
 import { DOMParser, XMLSerializer, type Element as XmlElement, type Node as XmlNode } from "@xmldom/xmldom";
 
 const encoder = new TextEncoder();
@@ -9,54 +9,10 @@ const NS = {
   office: "urn:oasis:names:tc:opendocument:xmlns:office:1.0",
   table: "urn:oasis:names:tc:opendocument:xmlns:table:1.0",
   text: "urn:oasis:names:tc:opendocument:xmlns:text:1.0",
+  config: "urn:oasis:names:tc:opendocument:xmlns:config:1.0",
 };
 const TEMPLATE_SHEET = "【原本】出張旅費精算";
-
-function crc32(bytes: Uint8Array): number {
-  let crc = 0xffffffff;
-  for (const byte of bytes) {
-    crc ^= byte;
-    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
-const uint16 = (value: number) => new Uint8Array([value & 255, (value >>> 8) & 255]);
-const uint32 = (value: number) => new Uint8Array([value & 255, (value >>> 8) & 255, (value >>> 16) & 255, (value >>> 24) & 255]);
-
-function join(parts: Uint8Array[]): Uint8Array {
-  const result = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
-  let offset = 0;
-  for (const part of parts) { result.set(part, offset); offset += part.length; }
-  return result;
-}
-
-function zipStore(files: Array<{ name: string; data: Uint8Array }>): Uint8Array {
-  const localParts: Uint8Array[] = [];
-  const centralParts: Uint8Array[] = [];
-  let offset = 0;
-  for (const file of files) {
-    const name = encoder.encode(file.name);
-    const checksum = crc32(file.data);
-    const local = join([
-      uint32(0x04034b50), uint16(20), uint16(0), uint16(0), uint16(0), uint16(0),
-      uint32(checksum), uint32(file.data.length), uint32(file.data.length), uint16(name.length), uint16(0), name, file.data,
-    ]);
-    localParts.push(local);
-    centralParts.push(join([
-      uint32(0x02014b50), uint16(20), uint16(20), uint16(0), uint16(0), uint16(0), uint16(0),
-      uint32(checksum), uint32(file.data.length), uint32(file.data.length), uint16(name.length), uint16(0), uint16(0),
-      uint16(0), uint16(0), uint32(0), uint32(offset), name,
-    ]));
-    offset += local.length;
-  }
-  const locals = join(localParts);
-  const central = join(centralParts);
-  return join([
-    locals, central, uint32(0x06054b50), uint16(0), uint16(0), uint16(files.length), uint16(files.length),
-    uint32(central.length), uint32(locals.length), uint16(0),
-  ]);
-}
+const ZIP_MTIME = new Date(2026, 0, 1, 0, 0, 0);
 
 function elementChildren(parent: XmlElement): XmlElement[] {
   return Array.from(parent.childNodes).filter((node): node is XmlElement => node.nodeType === 1);
@@ -165,6 +121,46 @@ function populateSheet(table: XmlElement, state: AppState, page: ExpenseLine[], 
   totalCell.setAttributeNS(NS.table, "table:formula", "of:=SUM([.F11:.F30])");
 }
 
+function synchronizeSettings(settings: Uint8Array, sheetNames: string[]): Uint8Array<ArrayBuffer> {
+  const document = new DOMParser().parseFromString(decoder.decode(settings), "application/xml");
+  const configItems = Array.from(document.getElementsByTagNameNS(NS.config, "config-item"));
+  configItems
+    .filter((item) => item.getAttributeNS(NS.config, "name") === "ActiveTable")
+    .forEach((item) => { item.textContent = sheetNames[0]; });
+
+  const namedMaps = Array.from(document.getElementsByTagNameNS(NS.config, "config-item-map-named"));
+  namedMaps
+    .filter((map) => ["Tables", "ScriptConfiguration"].includes(map.getAttributeNS(NS.config, "name") ?? ""))
+    .forEach((map) => {
+      const entries = elementChildren(map).filter((element) => element.namespaceURI === NS.config && element.localName === "config-item-map-entry");
+      const template = entries.find((entry) => entry.getAttributeNS(NS.config, "name") === TEMPLATE_SHEET) ?? entries[0];
+      if (!template) return;
+      entries.forEach((entry) => map.removeChild(entry));
+      sheetNames.forEach((sheetName, index) => {
+        const entry = template.cloneNode(true) as XmlElement;
+        entry.setAttributeNS(NS.config, "config:name", sheetName);
+        Array.from(entry.getElementsByTagNameNS(NS.config, "config-item"))
+          .filter((item) => item.getAttributeNS(NS.config, "name") === "CodeName")
+          .forEach((item) => { item.textContent = `Sheet${index + 1}`; });
+        map.appendChild(entry);
+      });
+    });
+  const encoded = encoder.encode(new XMLSerializer().serializeToString(document));
+  const result = new Uint8Array(encoded.length);
+  result.set(encoded);
+  return result;
+}
+
+function packageOds(archive: Record<string, Uint8Array>): Uint8Array {
+  const mimetype = archive.mimetype;
+  if (!mimetype) throw new Error("ODS原本にmimetypeがありません。");
+  const files: Zippable = { mimetype: [mimetype, { level: 0, mtime: ZIP_MTIME }] };
+  Object.entries(archive).forEach(([name, data]) => {
+    if (name !== "mimetype") files[name] = [data, { level: name.endsWith("/") ? 0 : 6, mtime: ZIP_MTIME }];
+  });
+  return zipSync(files);
+}
+
 export function createOdsFromTemplate(template: ArrayBuffer, state: AppState, lines: ExpenseLine[]): Blob {
   const archive = unzipSync(new Uint8Array(template));
   const content = archive["content.xml"];
@@ -184,8 +180,10 @@ export function createOdsFromTemplate(template: ArrayBuffer, state: AppState, li
     parent.appendChild(sheet);
   });
   archive["content.xml"] = encoder.encode(new XMLSerializer().serializeToString(document));
-  const orderedFiles = Object.entries(archive).sort(([left], [right]) => left === "mimetype" ? -1 : right === "mimetype" ? 1 : left.localeCompare(right));
-  return new Blob([zipStore(orderedFiles.map(([name, data]) => ({ name, data }))) as BlobPart], { type: "application/vnd.oasis.opendocument.spreadsheet" });
+  if (archive["settings.xml"]) {
+    archive["settings.xml"] = synchronizeSettings(archive["settings.xml"], pages.map((_, index) => `出張旅費精算_${index + 1}`));
+  }
+  return new Blob([packageOds(archive) as BlobPart], { type: "application/vnd.oasis.opendocument.spreadsheet" });
 }
 
 export function parseOdsTableRows(buffer: ArrayBuffer): unknown[][] {

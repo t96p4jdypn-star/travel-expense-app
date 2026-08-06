@@ -22,12 +22,13 @@ export function prioritizeClaimRouteCandidates(candidates: ClaimMaster[]): Claim
     .map((master, index) => ({
       master,
       index,
-      missingCount:
-        Number(!master.paidSection.trim())
-        + Number(safeAmount(master.icFare) <= 0)
-        + Number(!master.reason.trim()),
+      complete: Boolean(master.paidSection.trim()) && safeAmount(master.icFare) > 0 && Boolean(master.reason.trim()),
     }))
-    .sort((a, b) => a.missingCount - b.missingCount || a.index - b.index)
+    .sort((a, b) =>
+      Number(b.complete) - Number(a.complete)
+      || b.master.useCount - a.master.useCount
+      || b.master.lastUsedDate.localeCompare(a.master.lastUsedDate)
+      || a.index - b.index)
     .map(({ master }) => master);
 }
 

@@ -47,6 +47,29 @@ test("金額または理由が不足する区間候補は完全な候補より�
   assert.deepEqual(claimRouteCandidates([incomplete, complete], "本社").map((master) => master.id), ["incomplete", "complete"]);
 });
 
+test("区間候補は完全候補を優先し、各群を利用回数と最終利用日で並べる", () => {
+  const candidate = (id: string, patch: Partial<(ReturnType<typeof createInitialState>)["claimMasters"][number]> = {}) => ({
+    id, destination: "本社", origin: "A", arrival: "B", paidSection: "A→B", icFare: 200,
+    reason: "業務", useCount: 1, lastUsedDate: "2026-01-01", sourceName: "テスト", ...patch,
+  });
+  const candidates = [
+    candidate("complete-old", { useCount: 3, lastUsedDate: "2026-07-01" }),
+    candidate("incomplete-frequent", { reason: "", useCount: 99, lastUsedDate: "2026-08-01" }),
+    candidate("complete-recent", { useCount: 3, lastUsedDate: "2026-08-01" }),
+    candidate("complete-frequent", { useCount: 8, lastUsedDate: "2026-06-01" }),
+  ];
+  assert.deepEqual(prioritizeClaimRouteCandidates(candidates).map((master) => master.id), [
+    "complete-frequent", "complete-recent", "complete-old", "incomplete-frequent",
+  ]);
+});
+
+test("候補選択後に金額を変更した場合は最終確定実績だけを更新する", () => {
+  const existing = [{ id: "341", destination: "本社", origin: "川越", arrival: "北与野", paidSection: "川越→北与野", icFare: 341, reason: "本社業務", useCount: 7, lastUsedDate: "2026-07-01", sourceName: "既存" }];
+  const merged = mergeClaimMasters(existing, [{ date: "2026-08-07", destination: "本社", paidSection: "川越→北与野", icFare: 350, reason: "本社業務" }], "画面入力");
+  assert.equal(merged.find((master) => master.id === "341")?.useCount, 7);
+  assert.equal(merged.find((master) => master.icFare === 350)?.useCount, 1);
+});
+
 test("旧保存環境は既存実績を保護しながら不足する初期実績だけを一回追加する", () => {
   const existing = state() as unknown as Omit<AppState, "version"> & { version: number };
   existing.version = 2;
@@ -263,6 +286,23 @@ test("ODSは20行単位のシートと合計計算式を持つ", async () => {
   assert.match(storedText, /table:formula="of:=SUM\(\[\.F11:\.F30\]\)"/);
   assert.match(storedText, /営業部/);
   assert.match(storedText, /山田 太郎/);
+  const settings = new TextDecoder().decode(unzipSync(binary)["settings.xml"]);
+  assert.doesNotMatch(settings, /【原本】出張旅費精算|【見本】出張旅費精算/);
+  assert.match(settings, /出張旅費精算_1/);
+  assert.match(settings, /出張旅費精算_2/);
+
+  const view = new DataView(binary.buffer, binary.byteOffset, binary.byteLength);
+  const firstNameLength = view.getUint16(26, true);
+  const firstExtraLength = view.getUint16(28, true);
+  const firstName = new TextDecoder().decode(binary.slice(30, 30 + firstNameLength));
+  assert.equal(firstName, "mimetype");
+  assert.equal(view.getUint16(8, true), 0);
+  assert.equal(firstExtraLength, 0);
+  assert.notEqual(view.getUint16(12, true), 0);
+  assert.deepEqual(Object.keys(unzipSync(binary)), [
+    "mimetype", "manifest.rdf", "Configurations2/", "styles.xml", "settings.xml", "meta.xml",
+    "Thumbnails/thumbnail.png", "META-INF/manifest.xml", "content.xml",
+  ]);
 });
 
 test("過去ODSは原本シートの11～30行だけを解析する", async () => {
